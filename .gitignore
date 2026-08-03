@@ -10,3 +10,9 @@ build/
 .next/
 .eslintcache
 *.tsbuildinfo
+test-results/
+playwright-report/
+.dev-dist/
+
+# Local Netlify folder
+.netlify

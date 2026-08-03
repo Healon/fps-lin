@@ -1,0 +1,27 @@
+{
+  "name": "fps-lin",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@11.17.0",
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.1.2",
+    "esbuild": "0.28.1",
+    "typescript": "7.0.2"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "size": "node scripts/size.mjs",
+    "size:check": "node scripts/size-check.mjs",
+    "check:assets": "node scripts/check-assets.mjs",
+    "check:deps": "node scripts/check-deps.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/unit/*.test.ts && playwright test",
+    "gate": "npm run check:assets && npm run check:deps && npm run typecheck && npm run build && npm run size:check && npm run test"
+  }
+}
