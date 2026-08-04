@@ -27,7 +27,7 @@ test("M1 戰鬥流程：擊殺 3 隻巡行體、玩家死亡與重生，全程�
 
   // 依序擊殺每隻敵人：aimAt(0) 永遠指向目前仍存活的第一隻（前一隻死後會遞補）。
   // 敵人偵測到玩家後會朝玩家追擊移動，因此每次開火前都要重新 aimAt 校正瞄準線，
-  // 不能只在回合開頭瞄一次；3 發（12x3=36 > HP 30）理論上足以擊殺，多給幾發餘裕。
+  // 不能只在回合開頭瞄一次；2 發（12x2=24 = HP 24）理論上足以擊殺，多給幾發餘裕。
   for (let enemyRound = 0; enemyRound < 3; enemyRound++) {
     let aliveBefore = await page.evaluate(() => window.__p96!.enemiesAlive());
     for (let shot = 0; shot < 10 && aliveBefore > 3 - enemyRound - 1; shot++) {

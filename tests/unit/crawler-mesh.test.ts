@@ -2,6 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateCrawlerMesh, CRAWLER_VERTEX_STRIDE } from "../../src/procgen/mesh/crawler.ts";
+import { CRAWLER_HALF } from "../../src/game/enemy.ts";
+import { AIM_ASSIST_MARGIN } from "../../src/game/weapons.ts";
 
 test("generateCrawlerMesh 兩次生成的頂點與索引逐位元相同（同 seed 決定性）", () => {
   const a = generateCrawlerMesh();
@@ -57,4 +59,20 @@ test("站立總高鎖定在 1.7±0.1m（PLAN §3.4 v4 殭屍人形，頂點 y �
   }
   const height = maxY - minY;
   assert.ok(Math.abs(height - 1.7) <= 0.1, `站立高度應為 1.7±0.1m，實際 ${height}`);
+});
+
+test("視覺不超出命中包絡：任何頂點的水平半徑 ≤ min(CRAWLER_HALF.x, z) + AIM_ASSIST_MARGIN（含安全餘量）", () => {
+  // 命中 AABB 不隨 yaw 旋轉，敵人可任意朝向，因此「瞄到可見部位必定判中」的充分條件是
+  // 每個頂點的水平半徑不超過外擴後 AABB 的最小半寬。此不變量一破，玩家就會遇到
+  // 「明明打中手臂卻 miss」的體感缺陷（M1 全 diff 審查發現的應修項）。
+  const mesh = generateCrawlerMesh();
+  const limit = Math.min(CRAWLER_HALF.x, CRAWLER_HALF.z) + AIM_ASSIST_MARGIN - 0.005;
+  let maxRadius = 0;
+  for (let i = 0; i < mesh.vertices.length; i += CRAWLER_VERTEX_STRIDE) {
+    const x = mesh.vertices[i];
+    const z = mesh.vertices[i + 2];
+    const r = Math.hypot(x, z);
+    if (r > maxRadius) maxRadius = r;
+  }
+  assert.ok(maxRadius <= limit, `最大水平半徑 ${maxRadius.toFixed(3)} 超出命中包絡上限 ${limit.toFixed(3)}`);
 });

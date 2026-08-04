@@ -44,8 +44,10 @@ const CHASE_DRIFT_ID_PHASE_SCALE = 1.7; // 弧度／每 id
 const CHASE_DRIFT_ANGULAR_FREQUENCY = (2 * Math.PI) / CHASE_DRIFT_PERIOD_SECONDS;
 
 /** 敵人碰撞／命中判定半徑（與視覺模型尺寸解耦，類似 player.ts 的 PLAYER_HALF 慣例）。
- *  PLAN §3.4 v4：胸口正對準星高度，站立總高約 1.7m（= 2 × CRAWLER_HALF.y）。 */
-export const CRAWLER_HALF: Vec3 = { x: 0.3, y: 0.85, z: 0.3 };
+ *  PLAN §3.4 v4：胸口正對準星高度，站立總高約 1.7m（= 2 × CRAWLER_HALF.y）。
+ *  水平尺寸須涵蓋視覺輪廓的旋轉包絡（含前伸手臂），否則瞄準可見部位會系統性 miss；
+ *  不變量由 tests/unit/crawler-mesh.test.ts 的「視覺不超出命中包絡」測試鎖定。 */
+export const CRAWLER_HALF: Vec3 = { x: 0.35, y: 0.85, z: 0.42 };
 
 export interface FsmContext {
   distanceToPlayer: number;

@@ -26,7 +26,7 @@ export interface RoomGeometry {
    * 天花板幾何：與地板同尺寸腳印、置於牆頂高度，法線朝下。純視覺（補上開放式測試房的
    * 上方虛空，Lin 反饋「整體太暗」的一部分即來自此區塊）；沿用 texture.stone_wall 材質
    * （renderer 端整體壓暗，見 gfx/renderer.ts CEILING_BRIGHTNESS），不另開材質種子。
-   * 不設碰撞 AABB：玩家跳躍高度僅 1.2m，構造上不可能觸及 4m 高的天花板。
+   * 不設碰撞 AABB：玩家無跳躍能力（D-005），構造上不可能觸及 4m 高的天花板。
    */
   ceilingVertices: Float32Array;
   ceilingIndices: Uint32Array;
@@ -248,7 +248,7 @@ export function generateTestRoom(): RoomGeometry {
   colliders.push(aabbFromCenterHalf(floorSpec.center, floorSpec.half));
 
   // 天花板：與地板同腳印，置於牆頂（y=WALL_HEIGHT）；純視覺補上開放式測試房的上方虛空，
-  // 不加入 colliders（玩家跳躍高度僅 1.2m，構造上不可能觸及）。固定常數、非 rng 生成，
+  // 不加入 colliders（玩家無跳躍能力（D-005），構造上不可能觸及）。固定常數、非 rng 生成，
   // 不影響 levelHash 的決定性驗證範圍（見下方 computeLevelHash 呼叫處註解）。
   const ceilingSpec: ObstacleSpec = {
     center: { x: 0, y: WALL_HEIGHT + FLOOR_THICKNESS / 2, z: 0 },

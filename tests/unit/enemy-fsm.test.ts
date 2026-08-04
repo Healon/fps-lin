@@ -192,7 +192,7 @@ test("規格鎖定：巡行體數值必須符合 PLAN §3.4 v4（改規格請同
   assert.ok(RETREAT_DURATION >= 1.0 && RETREAT_DURATION <= 1.5, "後撤時長需落在 1.0～1.5 秒");
   assert.ok(RETREAT_SPEED > 0 && RETREAT_SPEED < CRAWLER_SPEED * 2, "後撤速度需為合理正值");
   assert.ok(Math.abs(CHASE_DRIFT_MAX_RADIANS - (35 * Math.PI) / 180) < 1e-9, "橫向漂移最大偏擺角約 ±35 度");
-  assert.deepEqual(CRAWLER_HALF, { x: 0.3, y: 0.85, z: 0.3 }, "PLAN §3.4 v4：胸口正對準星高度，站立總高約 1.7m");
+  assert.deepEqual(CRAWLER_HALF, { x: 0.35, y: 0.85, z: 0.42 }, "PLAN §3.4 v4：胸口正對準星高度，站立總高約 1.7m；水平尺寸涵蓋視覺旋轉包絡");
 });
 
 test("受擊回饋：applyDamage 非致命命中觸發 hitFlashIntensity=1，隨時間衰減至 0", () => {

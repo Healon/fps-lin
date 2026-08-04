@@ -64,24 +64,27 @@ export function generateCrawlerMesh(): CrawlerMesh {
   const torsoCenter: Vec3 = { x: 0, y: torsoCenterY, z: leanOffsetZ(torsoCenterY) };
   appendColoredBox(target, torsoCenter, torsoHalf, BODY_COLOR, { nz: WARNING_COLOR });
 
-  // 頭：置於軀幹頂端並略前於軀幹前緣，前臉（眼睛所在面）著警示橘。
+  // 頭：置於軀幹頂端並略前於軀幹前緣（前移量收斂在命中包絡內），前臉（眼睛所在面）著警示橘。
   const headCenterY = hipY + torsoHeight + headHeight / 2;
   const headCenter: Vec3 = {
     x: 0,
     y: headCenterY,
-    z: leanOffsetZ(headCenterY) - torsoHalf.z - headHalf.z * 0.6,
+    z: leanOffsetZ(headCenterY) - torsoHalf.z - headHalf.z * 0.4,
   };
   appendColoredBox(target, headCenter, headHalf, BODY_COLOR, { nz: WARNING_COLOR });
 
   // 雙臂前伸（殭屍伸手感）：由肩膀朝 -Z 方向（面向前方）伸出，手臂本體維持機體深色。
+  // 尺寸約束：命中 AABB 不隨 yaw 旋轉，所以「任何朝向都打得中」要求每個頂點的水平半徑
+  // ≤ min(CRAWLER_HALF.x, CRAWLER_HALF.z) + AIM_ASSIST_MARGIN。手臂是最外緣的部位，
+  // 前伸長度與側移都收斂在該包絡內（不變量測試見 tests/unit/crawler-mesh.test.ts）。
   const armHalf: Vec3 = {
     x: 0.055 + rng() * 0.015,
     y: 0.05 + rng() * 0.015,
-    z: (0.5 + rng() * 0.15) / 2,
+    z: 0.085 + rng() * 0.02,
   };
   const armShoulderY = hipY + torsoHeight * 0.82;
-  const armSideX = torsoHalf.x + armHalf.x * 0.9;
-  const armFrontZ = leanOffsetZ(armShoulderY) - torsoHalf.z - armHalf.z;
+  const armSideX = torsoHalf.x * 0.8;
+  const armFrontZ = leanOffsetZ(armShoulderY) - torsoHalf.z * 0.6 - armHalf.z;
   appendColoredBox(target, { x: -armSideX, y: armShoulderY, z: armFrontZ }, armHalf, BODY_COLOR);
   appendColoredBox(target, { x: armSideX, y: armShoulderY, z: armFrontZ }, armHalf, BODY_COLOR);
 
