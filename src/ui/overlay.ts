@@ -12,6 +12,7 @@ export class Overlay {
   private readonly startPanel: HTMLDivElement;
   private readonly crosshair: HTMLDivElement;
   private readonly errorPanel: HTMLDivElement;
+  private readonly crosshairBars: HTMLDivElement[] = [];
   private onStartCallback: (() => void) | null = null;
 
   constructor(container: HTMLElement = document.body) {
@@ -49,7 +50,7 @@ export class Overlay {
     });
 
     const title = document.createElement("div");
-    title.textContent = "PROJECT 96［M0］";
+    title.textContent = "PROJECT 96［M1］";
     Object.assign(title.style, {
       fontSize: "clamp(24px, 5vw, 48px)",
       fontWeight: "700",
@@ -66,8 +67,24 @@ export class Overlay {
       letterSpacing: "0.12em",
     });
 
+    const controls = document.createElement("div");
+    controls.innerHTML = [
+      "W A S D：移動",
+      "滑鼠 或 方向鍵：視角",
+      "滑鼠左鍵 或 空白鍵：射擊",
+      "Esc：暫停",
+    ].join("<br>");
+    Object.assign(controls.style, {
+      fontSize: "clamp(12px, 1.6vw, 15px)",
+      color: COLOR_TEXT,
+      opacity: "0.72",
+      letterSpacing: "0.08em",
+      lineHeight: "2",
+    });
+
     el.appendChild(title);
     el.appendChild(prompt);
+    el.appendChild(controls);
     return el;
   }
 
@@ -99,9 +116,18 @@ export class Overlay {
       return b;
     };
 
-    el.appendChild(bar("2px", "16px"));
-    el.appendChild(bar("16px", "2px"));
+    const vertical = bar("2px", "16px");
+    const horizontal = bar("16px", "2px");
+    el.appendChild(vertical);
+    el.appendChild(horizontal);
+    this.crosshairBars.push(vertical, horizontal);
     return el;
+  }
+
+  /** M1 武器命中回饋：短暫將準星變色（警示橘），供 weapon.hitMarkerActive 驅動。 */
+  setCrosshairHit(active: boolean): void {
+    const color = active ? COLOR_ERROR : COLOR_TEXT;
+    for (const bar of this.crosshairBars) bar.style.background = color;
   }
 
   private buildErrorPanel(): HTMLDivElement {

@@ -1,13 +1,20 @@
 // 輸入管理：pointer lock（點 canvas 取得，Esc 由瀏覽器退出時觸發 overlay 回呼）、
-// WASD、Space、滑鼠 delta。
+// WASD 移動、方向鍵視角（無滑鼠替代）、空白鍵或左鍵射擊、滑鼠 delta。無跳躍（D-005）。
 
 export interface InputState {
   forward: boolean;
   back: boolean;
   left: boolean;
   right: boolean;
-  jump: boolean;
+  lookLeft: boolean;
+  lookRight: boolean;
+  lookUp: boolean;
+  lookDown: boolean;
   pointerLocked: boolean;
+  /** 左鍵或空白鍵按住＝持續開火（實際射速仍由武器冷卻限制，見 game/weapons.ts）。 */
+  fire: boolean;
+  /** 空白鍵獨立追蹤，與滑鼠左鍵分開，避免互相蓋掉對方的放開事件。 */
+  fireKey: boolean;
 }
 
 export type PointerLockChangeCallback = (locked: boolean) => void;
@@ -18,9 +25,19 @@ export class InputManager {
     back: false,
     left: false,
     right: false,
-    jump: false,
+    lookLeft: false,
+    lookRight: false,
+    lookUp: false,
+    lookDown: false,
     pointerLocked: false,
+    fire: false,
+    fireKey: false,
   };
+
+  /** 是否處於開火輸入（滑鼠左鍵或空白鍵任一按住）。 */
+  get firing(): boolean {
+    return this.state.fire || this.state.fireKey;
+  }
 
   private mouseDX = 0;
   private mouseDY = 0;
@@ -28,11 +45,11 @@ export class InputManager {
   private readonly onPointerLockChange: PointerLockChangeCallback | undefined;
 
   private readonly handleKeyDown = (e: KeyboardEvent): void => {
-    this.setKey(e.code, true);
+    if (this.setKey(e.code, true)) e.preventDefault();
   };
 
   private readonly handleKeyUp = (e: KeyboardEvent): void => {
-    this.setKey(e.code, false);
+    if (this.setKey(e.code, false)) e.preventDefault();
   };
 
   private readonly handleMouseMove = (e: MouseEvent): void => {
@@ -41,13 +58,31 @@ export class InputManager {
     this.mouseDY += e.movementY;
   };
 
-  private readonly handleClick = (): void => {
-    this.requestPointerLock();
+  /**
+   * 左鍵按下：尚未鎖定時視為「點擊進入」手勢，要求 pointer lock；已鎖定時視為開火按住。
+   * 只處理左鍵（button 0），避免右鍵／中鍵誤觸發。
+   */
+  private readonly handleMouseDown = (e: MouseEvent): void => {
+    if (e.button !== 0) return;
+    if (!this.state.pointerLocked) {
+      this.requestPointerLock();
+    } else {
+      this.state.fire = true;
+    }
+  };
+
+  private readonly handleMouseUp = (e: MouseEvent): void => {
+    if (e.button !== 0) return;
+    this.state.fire = false;
   };
 
   private readonly handlePointerLockChange = (): void => {
     const locked = document.pointerLockElement === this.canvas;
     this.state.pointerLocked = locked;
+    if (!locked) {
+      this.state.fire = false; // Esc 退出鎖定時，避免開火狀態卡在 true
+      this.state.fireKey = false;
+    }
     this.onPointerLockChange?.(locked);
   };
 
@@ -58,29 +93,43 @@ export class InputManager {
     window.addEventListener("keydown", this.handleKeyDown);
     window.addEventListener("keyup", this.handleKeyUp);
     window.addEventListener("mousemove", this.handleMouseMove);
-    canvas.addEventListener("click", this.handleClick);
+    canvas.addEventListener("mousedown", this.handleMouseDown);
+    window.addEventListener("mouseup", this.handleMouseUp);
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
   }
 
-  private setKey(code: string, pressed: boolean): void {
+  /** 回傳是否為本遊戲處理的按鍵（供呼叫端決定是否 preventDefault，擋掉空白鍵與方向鍵的頁面捲動）。 */
+  private setKey(code: string, pressed: boolean): boolean {
     switch (code) {
       case "KeyW":
         this.state.forward = pressed;
-        break;
+        return true;
       case "KeyS":
         this.state.back = pressed;
-        break;
+        return true;
       case "KeyA":
         this.state.left = pressed;
-        break;
+        return true;
       case "KeyD":
         this.state.right = pressed;
-        break;
+        return true;
       case "Space":
-        this.state.jump = pressed;
-        break;
+        this.state.fireKey = pressed;
+        return true;
+      case "ArrowLeft":
+        this.state.lookLeft = pressed;
+        return true;
+      case "ArrowRight":
+        this.state.lookRight = pressed;
+        return true;
+      case "ArrowUp":
+        this.state.lookUp = pressed;
+        return true;
+      case "ArrowDown":
+        this.state.lookDown = pressed;
+        return true;
       default:
-        break;
+        return false;
     }
   }
 
@@ -117,7 +166,8 @@ export class InputManager {
     window.removeEventListener("keydown", this.handleKeyDown);
     window.removeEventListener("keyup", this.handleKeyUp);
     window.removeEventListener("mousemove", this.handleMouseMove);
-    this.canvas.removeEventListener("click", this.handleClick);
+    this.canvas.removeEventListener("mousedown", this.handleMouseDown);
+    window.removeEventListener("mouseup", this.handleMouseUp);
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
   }
 }

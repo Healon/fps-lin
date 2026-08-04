@@ -1,9 +1,13 @@
-// 單一 shader program 的前向渲染器：MVP 變換、貼圖取樣、簡單方向光加環境光、
-// 遠處輕微霧化（往 #08090B 淡出）。
+// 前向渲染器：MVP 變換、貼圖取樣、方向光加環境光、遠處霧化淡出。地板與牆面（含障礙箱）
+// 分屬兩份獨立幾何與材質（floor_flagstone／castle_wall），各自一次 draw call；敵人另用頂點色
+// shader。PLAN §5.1 v3（2026-08-04 依 Lin 驗收回饋修訂）：氛圍改走恐懼與城堡石材，環境光下調
+// 並帶冷灰偏、霧色改冷黑加密度上調、火光琥珀光帶帶 uTime 微閃爍、暗角疊圖（見 ui/hud.ts）。
 
 import { createGL2Context, createProgram, createVAO, createTexture2D, type AttribLayout } from "./gl.ts";
 import { perspective, identity, type Mat4, type Vec3 } from "../core/math.ts";
 import { VERTEX_STRIDE } from "../procgen/level/room.ts";
+import { CRAWLER_VERTEX_STRIDE, WARNING_COLOR } from "../procgen/mesh/crawler.ts";
+import { PISTOL_VERTEX_STRIDE } from "../procgen/mesh/pistol.ts";
 
 const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec3 aPosition;
@@ -37,20 +41,35 @@ in vec3 vWorldPos;
 uniform sampler2D uTexture;
 uniform vec3 uLightDir;
 uniform float uAmbient;
+uniform vec3 uAmbientColor;
+uniform vec3 uLightColor;
 uniform vec3 uCameraPos;
 uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
+// 供天花板重用牆面材質時整體壓暗一階用（1.0＝原樣，見 renderCeiling 的 CEILING_BRIGHTNESS）。
+uniform float uBrightness;
+uniform float uTime;
 
 out vec4 fragColor;
 
 void main() {
   vec3 normal = normalize(vNormal);
   float diffuse = max(dot(normal, -normalize(uLightDir)), 0.0);
-  float light = clamp(uAmbient + diffuse * (1.0 - uAmbient), 0.0, 1.0);
 
   vec4 texColor = texture(uTexture, vUv);
-  vec3 lit = texColor.rgb * light;
+  // 環境光（冷灰偏，uAmbientColor）加方向光（暖色調 uLightColor）：冷陰影加暖高光的對比，
+  // 呼應 PLAN §5.1 v3「恐懼而非溫馨」的城堡火把氛圍。
+  vec3 lit = texColor.rgb * uAmbient * uAmbientColor + texColor.rgb * diffuse * (1.0 - uAmbient) * uLightColor;
+
+  // 火把感微閃爍：低頻疊加＋偶發短暫下沉，範圍約 0.8～1.0，避免頻閃刺眼（無高頻成分）。
+  float flickerSlow = sin(uTime * 1.1);
+  float flickerFast = sin(uTime * 2.6 + 1.3);
+  float flickerBase = 0.925 + 0.06 * flickerSlow + 0.03 * flickerFast;
+  float dipPulse = pow(max(sin(uTime * 0.23 + 2.0), 0.0), 8.0);
+  float flicker = clamp(flickerBase - dipPulse * 0.12, 0.8, 1.0);
+
+  lit = lit * uBrightness * flicker;
 
   float dist = length(vWorldPos - uCameraPos);
   float fogFactor = clamp((dist - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
@@ -66,20 +85,137 @@ const LAYOUT: AttribLayout[] = [
   { name: "aUv", size: 2, offsetFloats: 6 },
 ];
 
+// M1：敵人（巡行體）用獨立的頂點色 shader，無 uv／texture sampler，
+// 額外支援 uDissolve（死亡溶解淡出，趨近霧色）。
+const ENEMY_VERTEX_SHADER = `#version 300 es
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec3 aColor;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProjection;
+
+out vec3 vNormal;
+out vec3 vColor;
+
+void main() {
+  vec4 worldPos = uModel * vec4(aPosition, 1.0);
+  vNormal = mat3(uModel) * aNormal;
+  vColor = aColor;
+  gl_Position = uProjection * uView * worldPos;
+}
+`;
+
+const ENEMY_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+in vec3 vNormal;
+in vec3 vColor;
+
+uniform vec3 uLightDir;
+uniform float uAmbient;
+uniform vec3 uLightColor;
+uniform vec3 uFogColor;
+uniform float uDissolve;
+// 受擊閃光（0～1，hurt 進入時設 1 隨時間衰減，見 game/enemy.ts hitFlashIntensity）。
+uniform float uHitFlash;
+// 警示橘自發光判定：與此顏色夠接近的頂點色視為警示面，不受環境壓暗影響，維持可讀性紅線。
+uniform vec3 uWarningColor;
+
+out vec4 fragColor;
+
+void main() {
+  vec3 normal = normalize(vNormal);
+  float diffuse = max(dot(normal, -normalize(uLightDir)), 0.0);
+  vec3 litNormal = vColor * uAmbient + vColor * diffuse * (1.0 - uAmbient) * uLightColor;
+
+  float isWarning = 1.0 - step(0.08, distance(vColor, uWarningColor));
+  vec3 lit = mix(litNormal, uWarningColor, isWarning);
+
+  lit = mix(lit, vec3(1.0), clamp(uHitFlash, 0.0, 1.0) * 0.75);
+  vec3 finalColor = mix(lit, uFogColor, clamp(uDissolve, 0.0, 1.0));
+  fragColor = vec4(finalColor, 1.0);
+}
+`;
+
+const ENEMY_LAYOUT: AttribLayout[] = [
+  { name: "aPosition", size: 3, offsetFloats: 0 },
+  { name: "aNormal", size: 3, offsetFloats: 3 },
+  { name: "aColor", size: 3, offsetFloats: 6 },
+];
+
+// M1 射擊視覺回饋（Lin 反饋「開槍看不見、命中看不見」）：無光照、純色 quad／line／point 的
+// 極簡 shader，供槍口閃光、彈道 tracer、命中火花共用一條動態頂點緩衝（每次繪製前整批更新，
+// 資料量極小，效能無虞）。
+const FX_VERTEX_SHADER = `#version 300 es
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec4 aColor;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProjection;
+
+out vec4 vColor;
+
+void main() {
+  vColor = aColor;
+  gl_PointSize = 14.0;
+  gl_Position = uProjection * uView * uModel * vec4(aPosition, 1.0);
+}
+`;
+
+const FX_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+in vec4 vColor;
+out vec4 fragColor;
+
+void main() {
+  fragColor = vColor;
+}
+`;
+
+/** interleaved：position(3) + color(4，含 alpha) = 7 float／頂點。 */
+const FX_VERTEX_STRIDE = 7;
+
+export type FxPrimitiveMode = "LINES" | "TRIANGLES" | "POINTS";
+
+export interface EnemyInstance {
+  model: Mat4;
+  /** 0（正常）至 1（完全溶解，趨近霧色）。 */
+  dissolve: number;
+  /** 0（正常）至 1（剛受擊，混白）。 */
+  hitFlash: number;
+}
+
+// 天花板重用 texture.castle_wall（不另開材質種子），繪製時整體壓暗一階。
+const CEILING_BRIGHTNESS = 0.6;
+// viewmodel 額外補光下限：避免因場景整體壓暗（v3 恐懼美術方向）而看不清手上的槍。
+const VIEWMODEL_MIN_AMBIENT = 0.6;
+
 export interface RendererConfig {
-  fogColor: Vec3; // 對應 PLAN §5.1 底黑 #08090B
+  fogColor: Vec3; // 對應 PLAN §5.1 v3 底黑（冷）#0A0908
   fogNear: number;
   fogFar: number;
   lightDir: Vec3;
+  /** 方向光色調，暖色調（PLAN §5.1 v3 火光琥珀 #D98A2B 方向），非全彩重著色。 */
+  lightColor: Vec3;
+  /** 環境光色調，冷灰偏，與 lightColor 形成冷陰影加暖高光的對比（恐懼氛圍）。 */
+  ambientColor: Vec3;
   ambient: number;
 }
 
+// 2026-08-04 v3 依 Lin 驗收回饋（「太木質化太溫馨，要恐懼」）修訂：環境光下調約 25% 並帶冷灰偏、
+// 霧色改冷黑、霧密度上調（遠端明顯沒入黑暗）。見 PLAN §5.1 v3 修訂紀錄。
 export const DEFAULT_RENDERER_CONFIG: RendererConfig = {
-  fogColor: { x: 0x08 / 255, y: 0x09 / 255, z: 0x0b / 255 },
-  fogNear: 8,
-  fogFar: 28,
+  fogColor: { x: 0x0a / 255, y: 0x09 / 255, z: 0x08 / 255 },
+  fogNear: 9,
+  fogFar: 24,
   lightDir: { x: -0.4, y: -1, z: -0.3 },
-  ambient: 0.25,
+  lightColor: { x: 1.0, y: 0.8, z: 0.52 },
+  ambientColor: { x: 0.85, y: 0.9, z: 1.0 },
+  ambient: 0.36,
 };
 
 export class Renderer {
@@ -88,18 +224,42 @@ export class Renderer {
   private readonly program: WebGLProgram;
   private readonly config: RendererConfig;
 
-  private vao: WebGLVertexArrayObject | null = null;
-  private indexCount = 0;
-  private texture: WebGLTexture | null = null;
+  // 地板（texture.floor_planks）與牆面＋障礙箱（texture.stone_wall）各自獨立 VAO／texture，
+  // 共用同一個 program／uniform 版面（僅 uModel／texture 綁定逐組不同）。
+  private floorVao: WebGLVertexArrayObject | null = null;
+  private floorIndexCount = 0;
+  private floorTexture: WebGLTexture | null = null;
+  private wallVao: WebGLVertexArrayObject | null = null;
+  private wallIndexCount = 0;
+  private wallTexture: WebGLTexture | null = null;
+  // 天花板：重用 wallTexture（不另開材質種子），繪製時以 uBrightness 整體壓暗一階。
+  private ceilingVao: WebGLVertexArrayObject | null = null;
+  private ceilingIndexCount = 0;
   private projection: Mat4 = identity();
 
   private readonly uniformLocations: Record<string, WebGLUniformLocation | null>;
+
+  // M1：敵人（頂點色，無材質）獨立 program／VAO；viewmodel（第一人稱手槍）重用同一 program。
+  private readonly enemyProgram: WebGLProgram;
+  private readonly enemyUniformLocations: Record<string, WebGLUniformLocation | null>;
+  private enemyVao: WebGLVertexArrayObject | null = null;
+  private enemyIndexCount = 0;
+  private viewmodelVao: WebGLVertexArrayObject | null = null;
+  private viewmodelIndexCount = 0;
+
+  // 射擊視覺回饋（槍口閃光／tracer／火花）共用的極簡無光照 pipeline，動態頂點緩衝。
+  private readonly fxProgram: WebGLProgram;
+  private readonly fxUniformLocations: Record<string, WebGLUniformLocation | null>;
+  private fxVao: WebGLVertexArrayObject | null = null;
+  private fxVertexBuffer: WebGLBuffer | null = null;
 
   constructor(canvas: HTMLCanvasElement, config: RendererConfig = DEFAULT_RENDERER_CONFIG) {
     this.canvas = canvas;
     this.config = config;
     this.gl = createGL2Context(canvas);
     this.program = createProgram(this.gl, VERTEX_SHADER, FRAGMENT_SHADER);
+    this.enemyProgram = createProgram(this.gl, ENEMY_VERTEX_SHADER, ENEMY_FRAGMENT_SHADER);
+    this.fxProgram = createProgram(this.gl, FX_VERTEX_SHADER, FX_FRAGMENT_SHADER);
 
     const gl = this.gl;
     this.uniformLocations = {
@@ -109,11 +269,44 @@ export class Renderer {
       uTexture: gl.getUniformLocation(this.program, "uTexture"),
       uLightDir: gl.getUniformLocation(this.program, "uLightDir"),
       uAmbient: gl.getUniformLocation(this.program, "uAmbient"),
+      uAmbientColor: gl.getUniformLocation(this.program, "uAmbientColor"),
+      uLightColor: gl.getUniformLocation(this.program, "uLightColor"),
       uCameraPos: gl.getUniformLocation(this.program, "uCameraPos"),
       uFogColor: gl.getUniformLocation(this.program, "uFogColor"),
       uFogNear: gl.getUniformLocation(this.program, "uFogNear"),
       uFogFar: gl.getUniformLocation(this.program, "uFogFar"),
+      uBrightness: gl.getUniformLocation(this.program, "uBrightness"),
+      uTime: gl.getUniformLocation(this.program, "uTime"),
     };
+    this.enemyUniformLocations = {
+      uModel: gl.getUniformLocation(this.enemyProgram, "uModel"),
+      uView: gl.getUniformLocation(this.enemyProgram, "uView"),
+      uProjection: gl.getUniformLocation(this.enemyProgram, "uProjection"),
+      uLightDir: gl.getUniformLocation(this.enemyProgram, "uLightDir"),
+      uAmbient: gl.getUniformLocation(this.enemyProgram, "uAmbient"),
+      uLightColor: gl.getUniformLocation(this.enemyProgram, "uLightColor"),
+      uFogColor: gl.getUniformLocation(this.enemyProgram, "uFogColor"),
+      uDissolve: gl.getUniformLocation(this.enemyProgram, "uDissolve"),
+      uHitFlash: gl.getUniformLocation(this.enemyProgram, "uHitFlash"),
+      uWarningColor: gl.getUniformLocation(this.enemyProgram, "uWarningColor"),
+    };
+    this.fxUniformLocations = {
+      uModel: gl.getUniformLocation(this.fxProgram, "uModel"),
+      uView: gl.getUniformLocation(this.fxProgram, "uView"),
+      uProjection: gl.getUniformLocation(this.fxProgram, "uProjection"),
+    };
+
+    // FX 動態頂點緩衝：非索引繪製（drawArrays），VAO 手動建立（createVAO 是為索引幾何設計的）。
+    this.fxVao = gl.createVertexArray();
+    gl.bindVertexArray(this.fxVao);
+    this.fxVertexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fxVertexBuffer);
+    const fxStrideBytes = FX_VERTEX_STRIDE * 4;
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, fxStrideBytes, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, fxStrideBytes, 3 * 4);
+    gl.bindVertexArray(null);
 
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
@@ -124,14 +317,59 @@ export class Renderer {
     window.addEventListener("resize", () => this.resize());
   }
 
-  uploadGeometry(vertices: Float32Array, indices: Uint32Array): void {
+  uploadFloorGeometry(vertices: Float32Array, indices: Uint32Array): void {
     const { vao, indexCount } = createVAO(this.gl, this.program, vertices, indices, VERTEX_STRIDE, LAYOUT);
-    this.vao = vao;
-    this.indexCount = indexCount;
+    this.floorVao = vao;
+    this.floorIndexCount = indexCount;
   }
 
-  uploadTexture(size: number, pixels: Uint8Array): void {
-    this.texture = createTexture2D(this.gl, size, size, pixels);
+  uploadFloorTexture(size: number, pixels: Uint8Array): void {
+    this.floorTexture = createTexture2D(this.gl, size, size, pixels);
+  }
+
+  uploadWallGeometry(vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(this.gl, this.program, vertices, indices, VERTEX_STRIDE, LAYOUT);
+    this.wallVao = vao;
+    this.wallIndexCount = indexCount;
+  }
+
+  uploadWallTexture(size: number, pixels: Uint8Array): void {
+    this.wallTexture = createTexture2D(this.gl, size, size, pixels);
+  }
+
+  /** 天花板幾何：無獨立 texture 上傳方法，繪製時直接重用 wallTexture（見 render()）。 */
+  uploadCeilingGeometry(vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(this.gl, this.program, vertices, indices, VERTEX_STRIDE, LAYOUT);
+    this.ceilingVao = vao;
+    this.ceilingIndexCount = indexCount;
+  }
+
+  /** 上傳敵人（巡行體）共用幾何：所有實例共用同一份 VAO，逐實例只換 uModel／uDissolve。 */
+  uploadEnemyGeometry(vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(
+      this.gl,
+      this.enemyProgram,
+      vertices,
+      indices,
+      CRAWLER_VERTEX_STRIDE,
+      ENEMY_LAYOUT,
+    );
+    this.enemyVao = vao;
+    this.enemyIndexCount = indexCount;
+  }
+
+  /** 上傳第一人稱武器 viewmodel 幾何（重用敵人的頂點色 program／頂點格式）。 */
+  uploadViewmodelGeometry(vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(
+      this.gl,
+      this.enemyProgram,
+      vertices,
+      indices,
+      PISTOL_VERTEX_STRIDE,
+      ENEMY_LAYOUT,
+    );
+    this.viewmodelVao = vao;
+    this.viewmodelIndexCount = indexCount;
   }
 
   resize(): void {
@@ -148,18 +386,13 @@ export class Renderer {
     this.projection = perspective((90 * Math.PI) / 180, aspect, 0.1, 200);
   }
 
-  render(viewMatrix: Mat4, cameraPos: Vec3): void {
+  render(viewMatrix: Mat4, cameraPos: Vec3, timeSeconds: number): void {
     const gl = this.gl;
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    if (!this.vao || !this.texture) return;
+    if (!this.floorVao || !this.floorTexture || !this.wallVao || !this.wallTexture || !this.ceilingVao) return;
 
     gl.useProgram(this.program);
-    gl.bindVertexArray(this.vao);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.uniform1i(this.uniformLocations.uTexture, 0);
 
     const model = identity();
     gl.uniformMatrix4fv(this.uniformLocations.uModel, false, model);
@@ -168,13 +401,158 @@ export class Renderer {
 
     gl.uniform3f(this.uniformLocations.uLightDir, this.config.lightDir.x, this.config.lightDir.y, this.config.lightDir.z);
     gl.uniform1f(this.uniformLocations.uAmbient, this.config.ambient);
+    gl.uniform3f(this.uniformLocations.uAmbientColor, this.config.ambientColor.x, this.config.ambientColor.y, this.config.ambientColor.z);
+    gl.uniform3f(this.uniformLocations.uLightColor, this.config.lightColor.x, this.config.lightColor.y, this.config.lightColor.z);
     gl.uniform3f(this.uniformLocations.uCameraPos, cameraPos.x, cameraPos.y, cameraPos.z);
     gl.uniform3f(this.uniformLocations.uFogColor, this.config.fogColor.x, this.config.fogColor.y, this.config.fogColor.z);
     gl.uniform1f(this.uniformLocations.uFogNear, this.config.fogNear);
     gl.uniform1f(this.uniformLocations.uFogFar, this.config.fogFar);
+    gl.uniform1f(this.uniformLocations.uTime, timeSeconds);
 
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+    gl.uniform1i(this.uniformLocations.uTexture, 0);
+    gl.activeTexture(gl.TEXTURE0);
 
+    gl.uniform1f(this.uniformLocations.uBrightness, 1.0);
+
+    gl.bindVertexArray(this.floorVao);
+    gl.bindTexture(gl.TEXTURE_2D, this.floorTexture);
+    gl.drawElements(gl.TRIANGLES, this.floorIndexCount, gl.UNSIGNED_INT, 0);
+
+    gl.bindVertexArray(this.wallVao);
+    gl.bindTexture(gl.TEXTURE_2D, this.wallTexture);
+    gl.drawElements(gl.TRIANGLES, this.wallIndexCount, gl.UNSIGNED_INT, 0);
+
+    // 天花板：重用 wallTexture（同一張材質，不另開 GL texture），整體壓暗一階，
+    // 呼應 Lin 反饋「整體太暗」修正後、補上開放式測試房上方虛空的收尾（不新增材質種子）。
+    gl.uniform1f(this.uniformLocations.uBrightness, CEILING_BRIGHTNESS);
+    gl.bindVertexArray(this.ceilingVao);
+    gl.bindTexture(gl.TEXTURE_2D, this.wallTexture);
+    gl.drawElements(gl.TRIANGLES, this.ceilingIndexCount, gl.UNSIGNED_INT, 0);
+
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * 繪製敵人實例：共用同一份幾何（VAO 只綁定一次），逐實例更新 uModel／uDissolve 後各發一次
+   * draw call（敵人數量小，維持個位數 draw call）。不清空畫面，接續在 render() 之後呼叫。
+   */
+  renderEnemies(viewMatrix: Mat4, instances: EnemyInstance[]): void {
+    if (!this.enemyVao || instances.length === 0) return;
+    const gl = this.gl;
+
+    gl.useProgram(this.enemyProgram);
+    gl.bindVertexArray(this.enemyVao);
+
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uView, false, viewMatrix);
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uProjection, false, this.projection);
+    gl.uniform3f(
+      this.enemyUniformLocations.uLightDir,
+      this.config.lightDir.x,
+      this.config.lightDir.y,
+      this.config.lightDir.z,
+    );
+    gl.uniform1f(this.enemyUniformLocations.uAmbient, this.config.ambient);
+    gl.uniform3f(
+      this.enemyUniformLocations.uLightColor,
+      this.config.lightColor.x,
+      this.config.lightColor.y,
+      this.config.lightColor.z,
+    );
+    gl.uniform3f(
+      this.enemyUniformLocations.uFogColor,
+      this.config.fogColor.x,
+      this.config.fogColor.y,
+      this.config.fogColor.z,
+    );
+    gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
+
+    for (const instance of instances) {
+      gl.uniformMatrix4fv(this.enemyUniformLocations.uModel, false, instance.model);
+      gl.uniform1f(this.enemyUniformLocations.uDissolve, instance.dissolve);
+      gl.uniform1f(this.enemyUniformLocations.uHitFlash, instance.hitFlash);
+      gl.drawElements(gl.TRIANGLES, this.enemyIndexCount, gl.UNSIGNED_INT, 0);
+    }
+
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * 繪製第一人稱武器 viewmodel：繪製前清空深度緩衝，讓 viewmodel 蓋在整個世界（含敵人）之上；
+   * view 固定為單位矩陣（viewmodel 直接以「相機空間」座標定義，不受玩家實際視角影響，
+   * 只由 model 矩陣的 recoil 位移小幅偏移），錨定畫面固定位置。
+   */
+  renderViewmodel(model: Mat4): void {
+    if (!this.viewmodelVao) return;
+    const gl = this.gl;
+
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(this.enemyProgram);
+    gl.bindVertexArray(this.viewmodelVao);
+
+    const identityView = identity();
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uView, false, identityView);
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uProjection, false, this.projection);
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uModel, false, model);
+    gl.uniform3f(
+      this.enemyUniformLocations.uLightDir,
+      this.config.lightDir.x,
+      this.config.lightDir.y,
+      this.config.lightDir.z,
+    );
+    // viewmodel 補光：不論場景整體壓暗到多少，手上的槍至少維持 VIEWMODEL_MIN_AMBIENT 可讀。
+    gl.uniform1f(this.enemyUniformLocations.uAmbient, Math.max(this.config.ambient, VIEWMODEL_MIN_AMBIENT));
+    gl.uniform3f(
+      this.enemyUniformLocations.uLightColor,
+      this.config.lightColor.x,
+      this.config.lightColor.y,
+      this.config.lightColor.z,
+    );
+    gl.uniform3f(
+      this.enemyUniformLocations.uFogColor,
+      this.config.fogColor.x,
+      this.config.fogColor.y,
+      this.config.fogColor.z,
+    );
+    gl.uniform1f(this.enemyUniformLocations.uDissolve, 0);
+    gl.uniform1f(this.enemyUniformLocations.uHitFlash, 0);
+    gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
+
+    gl.drawElements(gl.TRIANGLES, this.viewmodelIndexCount, gl.UNSIGNED_INT, 0);
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * 繪製射擊視覺特效（槍口閃光／彈道 tracer／命中火花）：每次呼叫整批上傳新的動態頂點資料，
+   * 依 mode 以對應的 GL primitive 繪製一次。view 傳 identity() 可畫在 viewmodel 空間
+   * （如槍口閃光），傳實際世界 view matrix 則畫在世界空間（如 tracer／火花）。
+   */
+  renderFx(view: Mat4, model: Mat4, vertexData: Float32Array, mode: FxPrimitiveMode): void {
+    if (vertexData.length === 0 || !this.fxVao || !this.fxVertexBuffer) return;
+    const gl = this.gl;
+    const vertexCount = vertexData.length / FX_VERTEX_STRIDE;
+
+    gl.useProgram(this.fxProgram);
+    gl.bindVertexArray(this.fxVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fxVertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, vertexData, gl.DYNAMIC_DRAW);
+
+    gl.uniformMatrix4fv(this.fxUniformLocations.uModel, false, model);
+    gl.uniformMatrix4fv(this.fxUniformLocations.uView, false, view);
+    gl.uniformMatrix4fv(this.fxUniformLocations.uProjection, false, this.projection);
+
+    // 啟用 alpha 混合（僅本次繪製，畫完立即關閉，避免影響其餘不透明的 draw call）：
+    // 槍口閃光／tracer／火花皆用 alpha 淡出，沒有混合的話 alpha 會被忽略、無法真正淡出。
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // 火花／槍口閃光不寫入深度緩衝：避免同一幀內多次 renderFx 呼叫（如 tracer 與火花）
+    // 因深度寫入順序而互相遮蔽；世界幾何／敵人／viewmodel 仍照常寫入深度不受影響。
+    gl.depthMask(false);
+
+    const glMode = mode === "LINES" ? gl.LINES : mode === "POINTS" ? gl.POINTS : gl.TRIANGLES;
+    gl.drawArrays(glMode, 0, vertexCount);
+
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
   }
 }

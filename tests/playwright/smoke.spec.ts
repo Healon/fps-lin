@@ -4,19 +4,10 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+// window.__p96 型別宣告見 src/types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效）。
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GOLDEN_LEVEL_HASH = readFileSync(path.join(here, "..", "golden", "level-hash.txt"), "utf8").trim();
-
-declare global {
-  interface Window {
-    __p96?: {
-      ready: boolean;
-      frames: number;
-      levelHash: string;
-    };
-  }
-}
 
 test("M0 smoke：載入、無錯誤、frames 前進、levelHash 正確、點擊後 overlay 隱藏", async ({ page }) => {
   const consoleErrors: string[] = [];

@@ -1,0 +1,250 @@
+// 極小合成引擎：全部音效以 Web Audio 節點圖即時合成（PLAN §6.5），repo 零音訊檔。
+// AudioContext 延遲建立：首次呼叫 resumeAudioOnGesture()（現有「點擊進入」手勢）才建立並 resume。
+// voice 圖：oscillator／noise buffer → gain envelope（attack 線性、decay 指數）→ biquad filter
+// → master gain（暫用固定值，日後接設定系統時改讀使用者音量）。
+// 無音效裝置或 AudioContext 失敗時一律靜音續玩，禁止把例外拋出給呼叫端（PLAN §6.7）。
+
+const MASTER_GAIN = 0.8;
+
+let audioContext: AudioContext | null = null;
+let masterGainNode: GainNode | null = null;
+let noiseBuffer: AudioBuffer | null = null;
+let unavailable = false; // 一旦初始化失敗就記住，避免每次播放都重複嘗試並洗版警告
+
+interface AudioContextConstructorWindow {
+  AudioContext?: typeof AudioContext;
+  webkitAudioContext?: typeof AudioContext;
+}
+
+function ensureContext(): AudioContext | null {
+  if (unavailable) return null;
+  if (audioContext) return audioContext;
+
+  try {
+    const w = window as unknown as AudioContextConstructorWindow;
+    const Ctor = w.AudioContext ?? w.webkitAudioContext;
+    if (!Ctor) {
+      unavailable = true;
+      console.warn("[audio] 瀏覽器不支援 AudioContext，音效停用（靜音續玩）。");
+      return null;
+    }
+    audioContext = new Ctor();
+    masterGainNode = audioContext.createGain();
+    masterGainNode.gain.value = MASTER_GAIN;
+    masterGainNode.connect(audioContext.destination);
+    return audioContext;
+  } catch (err) {
+    unavailable = true;
+    console.warn("[audio] AudioContext 建立失敗，音效停用（靜音續玩）：", err);
+    return null;
+  }
+}
+
+/** 首次使用者手勢時呼叫（現有「點擊進入」畫面即手勢入口），嘗試建立並 resume AudioContext。 */
+export function resumeAudioOnGesture(): void {
+  const ctx = ensureContext();
+  if (!ctx) return;
+  if (ctx.state === "suspended") {
+    ctx.resume().catch((err: unknown) => {
+      console.warn("[audio] AudioContext resume 失敗（非致命，靜音續玩）：", err);
+    });
+  }
+}
+
+/** 建立（或沿用快取的）1 秒白噪音 buffer，供各 noise-based SFX 截取／循環使用。 */
+function getNoiseBuffer(ctx: AudioContext): AudioBuffer {
+  if (noiseBuffer && noiseBuffer.sampleRate === ctx.sampleRate) return noiseBuffer;
+  const length = ctx.sampleRate;
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  // 音效噪音只影響外觀／聽覺呈現，不涉及 PLAN §6.4 決定性鐵則；用簡單 LCG 只是圖個
+  // 乾淨可重現的產生方式，不需要走 rng/rng.ts 的 stream() 命名空間。
+  let seed = 0x9e3779b9;
+  for (let i = 0; i < length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    data[i] = (seed / 4294967296) * 2 - 1;
+  }
+  noiseBuffer = buffer;
+  return buffer;
+}
+
+interface EnvelopeSpec {
+  attack: number; // 秒
+  decay: number; // 秒
+  peak: number; // 0..1
+}
+
+function applyEnvelope(param: AudioParam, now: number, env: EnvelopeSpec): void {
+  param.cancelScheduledValues(now);
+  param.setValueAtTime(0.0001, now);
+  param.linearRampToValueAtTime(Math.max(env.peak, 0.0002), now + env.attack);
+  param.exponentialRampToValueAtTime(0.0001, now + env.attack + env.decay);
+}
+
+function safePlay(build: (ctx: AudioContext, master: GainNode) => void): void {
+  try {
+    const ctx = ensureContext();
+    if (!ctx || !masterGainNode) return;
+    build(ctx, masterGainNode);
+  } catch (err) {
+    console.warn("[audio] 播放音效時發生例外（非致命，靜音續玩）：", err);
+  }
+}
+
+interface NoiseVoiceOpts {
+  duration: number;
+  filterType: BiquadFilterType;
+  freqStart: number;
+  freqEnd?: number;
+  env: EnvelopeSpec;
+}
+
+function playNoiseVoice(ctx: AudioContext, master: GainNode, opts: NoiseVoiceOpts): void {
+  const now = ctx.currentTime;
+  const src = ctx.createBufferSource();
+  src.buffer = getNoiseBuffer(ctx);
+  src.loop = true;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = opts.filterType;
+  filter.frequency.setValueAtTime(opts.freqStart, now);
+  if (opts.freqEnd !== undefined) {
+    filter.frequency.exponentialRampToValueAtTime(Math.max(opts.freqEnd, 1), now + opts.duration);
+  }
+
+  const gain = ctx.createGain();
+  applyEnvelope(gain.gain, now, opts.env);
+
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(master);
+
+  src.start(now);
+  src.stop(now + opts.duration + 0.05);
+}
+
+interface OscVoiceOpts {
+  type: OscillatorType;
+  freqStart: number;
+  freqEnd: number;
+  duration: number;
+  env: EnvelopeSpec;
+  filterFreq?: number;
+}
+
+function playOscVoice(ctx: AudioContext, master: GainNode, opts: OscVoiceOpts): void {
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = opts.type;
+  osc.frequency.setValueAtTime(opts.freqStart, now);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(opts.freqEnd, 1), now + opts.duration);
+
+  const gain = ctx.createGain();
+  applyEnvelope(gain.gain, now, opts.env);
+
+  let tail: AudioNode = osc;
+  if (opts.filterFreq !== undefined) {
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = opts.filterFreq;
+    osc.connect(filter);
+    tail = filter;
+  }
+  tail.connect(gain);
+  gain.connect(master);
+
+  osc.start(now);
+  osc.stop(now + opts.duration + 0.05);
+}
+
+/** 槍聲（脈衝手槍）：noise burst 加方波 pitch 下滑，短促清脆。 */
+export function playShoot(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.06,
+      filterType: "bandpass",
+      freqStart: 2200,
+      freqEnd: 900,
+      env: { attack: 0.001, decay: 0.05, peak: 0.5 },
+    });
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 520,
+      freqEnd: 120,
+      duration: 0.08,
+      env: { attack: 0.001, decay: 0.07, peak: 0.35 },
+    });
+  });
+}
+
+/** 命中聲（非致命）：短 click 加中頻。 */
+export function playHit(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.03,
+      filterType: "highpass",
+      freqStart: 3000,
+      env: { attack: 0.0005, decay: 0.03, peak: 0.4 },
+    });
+    playOscVoice(ctx, master, {
+      type: "triangle",
+      freqStart: 900,
+      freqEnd: 700,
+      duration: 0.05,
+      env: { attack: 0.001, decay: 0.05, peak: 0.3 },
+    });
+  });
+}
+
+/** 敵人死亡：低頻碎裂感（noise 下滑加鋸齒波下滑）。 */
+export function playEnemyDie(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.25,
+      filterType: "lowpass",
+      freqStart: 1400,
+      freqEnd: 200,
+      env: { attack: 0.002, decay: 0.22, peak: 0.55 },
+    });
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 180,
+      freqEnd: 40,
+      duration: 0.3,
+      env: { attack: 0.002, decay: 0.28, peak: 0.4 },
+    });
+  });
+}
+
+/** 玩家受傷：低沉悶響。 */
+export function playPlayerHurt(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sine",
+      freqStart: 160,
+      freqEnd: 60,
+      duration: 0.2,
+      env: { attack: 0.001, decay: 0.18, peak: 0.6 },
+      filterFreq: 500,
+    });
+    playNoiseVoice(ctx, master, {
+      duration: 0.12,
+      filterType: "lowpass",
+      freqStart: 400,
+      env: { attack: 0.001, decay: 0.1, peak: 0.3 },
+    });
+  });
+}
+
+/** 重生：上滑合成器音，帶回歸感。 */
+export function playRespawn(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sine",
+      freqStart: 220,
+      freqEnd: 660,
+      duration: 0.3,
+      env: { attack: 0.02, decay: 0.28, peak: 0.5 },
+    });
+  });
+}

@@ -136,10 +136,41 @@ export function fpsViewMatrix(eye: Vec3, yaw: number, pitch: number): Mat4 {
   return lookAt(eye, target, { x: 0, y: 1, z: 0 });
 }
 
+function clampUnit(v: number): number {
+  return v < -1 ? -1 : v > 1 ? 1 : v;
+}
+
+/**
+ * 由方向向量（需為單位向量）反推 yaw／pitch，為 forwardFromYawPitch 的逆運算。
+ * 供 debug hook aimAt() 使用：把視角直接對準某個世界座標點。
+ */
+export function yawPitchFromDirection(dir: Vec3): { yaw: number; pitch: number } {
+  const pitch = Math.asin(clampUnit(dir.y));
+  const yaw = Math.atan2(-dir.x, -dir.z);
+  return { yaw, pitch };
+}
+
 export function translationMat4(t: Vec3): Mat4 {
   const out = identity();
   out[12] = t.x;
   out[13] = t.y;
   out[14] = t.z;
   return out;
+}
+
+/** 繞 Y 軸旋轉（yaw，弧度）的矩陣，慣例與 forwardFromYawPitch 一致：yaw 0 朝 -Z。 */
+export function rotationYMat4(yaw: number): Mat4 {
+  const out = identity();
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  out[0] = c;
+  out[2] = -s;
+  out[8] = s;
+  out[10] = c;
+  return out;
+}
+
+/** 位移加繞 Y 軸旋轉的組合矩陣（先旋轉、後平移），供敵人等需面向移動方向的實體使用。 */
+export function translationRotationYMat4(t: Vec3, yaw: number): Mat4 {
+  return multiply(translationMat4(t), rotationYMat4(yaw));
 }
