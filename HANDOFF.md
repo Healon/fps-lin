@@ -5,7 +5,7 @@
 ## 現在在哪裡
 
 - **main 分支**：M1 概念驗證已合併（Lin 2026-08-04 指示），含五輪實玩回饋修正。正式站 https://fps-lin.netlify.app 部署此版本。
-- **m1 分支**：與 main 同點（fast-forward 合併後保留作里程碑標記）。
+- **分支**：僅 main 一條。m1 開發分支於合併後刪除（Lin 指示），里程碑以 commit 訊息追溯（M0＝fbdf219、M1＝bdcecdb）。
 - GitHub：Healon/fps-lin（public）。Netlify site：fps-lin（帳號 slug siching-lin，部署用本機已登入的 netlify CLI）。
 
 ## M1 內容摘要（相對 M0 的差異）
