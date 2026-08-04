@@ -1,5 +1,9 @@
 // FPS 玩家控制器：yaw/pitch 視角（滑鼠或方向鍵）、移動、重力、AABB 逐軸碰撞解算。
 // 數值取自 PLAN §3.2：移速 6 m/s、重力 20 m/s²、眼高 1.7m。無跳躍（D-005）。
+//
+// 2026-08-04（M2）：加入 setSensitivity() 靈敏度倍率，同時作用於滑鼠視角與方向鍵視角轉速
+// （本次派工規格：「同時作用於方向鍵轉速」），由 core/settings.ts 的 SettingsStore 經正式 API
+// 呼叫套用，不允許外部直接改 MOUSE_SENSITIVITY／KEY_YAW_SPEED／KEY_PITCH_SPEED 常數本身。
 
 import type { Vec3, Mat4 } from "../core/math.ts";
 import { fpsViewMatrix } from "../core/math.ts";
@@ -27,25 +31,38 @@ export class PlayerController {
   pitch = 0;
   velocityY = 0;
   grounded = false;
+  /** 靈敏度倍率（0.5 至 2.0，見 core/settings.ts），預設 1.0＝不改變原始手感。 */
+  private sensitivityMultiplier = 1.0;
 
   constructor(startPosition: Vec3) {
     this.position = { ...startPosition };
   }
 
+  /** 套用設定系統的靈敏度倍率（正式 API，見 core/settings.ts SettingsStore）。 */
+  setSensitivity(multiplier: number): void {
+    this.sensitivityMultiplier = multiplier;
+  }
+
+  getSensitivity(): number {
+    return this.sensitivityMultiplier;
+  }
+
   private applyLook(mouseDX: number, mouseDY: number): void {
-    this.yaw -= mouseDX * MOUSE_SENSITIVITY;
-    this.pitch -= mouseDY * MOUSE_SENSITIVITY;
+    this.yaw -= mouseDX * MOUSE_SENSITIVITY * this.sensitivityMultiplier;
+    this.pitch -= mouseDY * MOUSE_SENSITIVITY * this.sensitivityMultiplier;
     this.pitch = clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
   }
 
   update(dt: number, input: InputState, mouseDelta: { dx: number; dy: number }, colliders: Aabb[]): void {
     this.applyLook(mouseDelta.dx, mouseDelta.dy);
 
-    // 方向鍵視角（無滑鼠時的替代操控，與滑鼠疊加）
-    if (input.lookLeft) this.yaw += KEY_YAW_SPEED * dt;
-    if (input.lookRight) this.yaw -= KEY_YAW_SPEED * dt;
-    if (input.lookUp) this.pitch += KEY_PITCH_SPEED * dt;
-    if (input.lookDown) this.pitch -= KEY_PITCH_SPEED * dt;
+    // 方向鍵視角（無滑鼠時的替代操控，與滑鼠疊加），同套用靈敏度倍率。
+    const keyYawSpeed = KEY_YAW_SPEED * this.sensitivityMultiplier;
+    const keyPitchSpeed = KEY_PITCH_SPEED * this.sensitivityMultiplier;
+    if (input.lookLeft) this.yaw += keyYawSpeed * dt;
+    if (input.lookRight) this.yaw -= keyYawSpeed * dt;
+    if (input.lookUp) this.pitch += keyPitchSpeed * dt;
+    if (input.lookDown) this.pitch -= keyPitchSpeed * dt;
     this.pitch = clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 
     // 依 yaw 建立水平前／右方向（忽略 pitch，符合 FPS 慣例的地面移動）

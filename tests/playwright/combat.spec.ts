@@ -1,6 +1,12 @@
 // Playwright 真瀏覽器閘門：M1 戰鬥流程。用 window.__p96 debug hooks 驅動：
 // 初始 3 隻巡行體 → aimAt 加 fire 連打至 0 → damagePlayer(100) 觸發死亡畫面 →
 // 3 秒後自動重生，敵人與彈藥從種子重建、HP 回滿。全程無 console error／pageerror。
+//
+// 2026-08-04（M2）微調：加入三態遊戲狀態機（見 src/game/state.ts）後，玩家移動／武器／敵人／
+// 戰鬥／特效的模擬一律以 gameState.state === "playing" 為閘門，menu 狀態下完全不跑（收掉
+// HANDOFF 待辦第 3 條技術債）。本測試原本從不點擊主選單、全程只靠 debug hooks 驅動，若維持
+// 原樣會停在 menu 狀態，combat.update() 的死亡重生倒數永遠不會被呼叫到，最後一段
+// waitForFunction(playerHp()===100) 會逾時。故補一行「點擊主選單進入 playing」，其餘劇本不變。
 import { test, expect } from "@playwright/test";
 // window.__p96 型別宣告見 src/types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效）。
 
@@ -20,6 +26,10 @@ test("M1 戰鬥流程：擊殺 3 隻巡行體、玩家死亡與重生，全程�
 
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
+
+  // 進入 playing 狀態（M2 起，戰鬥模擬與死亡重生倒數只在 playing 時更新，見上方檔頭註解）。
+  await page.locator("#p96-start-overlay").click();
+  await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 初始 3 隻巡行體存活
   const initialAlive = await page.evaluate(() => window.__p96!.enemiesAlive());

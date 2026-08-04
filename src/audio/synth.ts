@@ -1,15 +1,18 @@
 // 極小合成引擎：全部音效以 Web Audio 節點圖即時合成（PLAN §6.5），repo 零音訊檔。
 // AudioContext 延遲建立：首次呼叫 resumeAudioOnGesture()（現有「點擊進入」手勢）才建立並 resume。
 // voice 圖：oscillator／noise buffer → gain envelope（attack 線性、decay 指數）→ biquad filter
-// → master gain（暫用固定值，日後接設定系統時改讀使用者音量）。
+// → master gain（由 setMasterVolume() 套用設定系統的主音量，見 core/settings.ts）。
 // 無音效裝置或 AudioContext 失敗時一律靜音續玩，禁止把例外拋出給呼叫端（PLAN §6.7）。
 
-const MASTER_GAIN = 0.8;
+const DEFAULT_MASTER_GAIN = 0.8; // 對應設定系統音量預設值 80／100（core/settings.ts VOLUME_DEFAULT）
 
 let audioContext: AudioContext | null = null;
 let masterGainNode: GainNode | null = null;
 let noiseBuffer: AudioBuffer | null = null;
 let unavailable = false; // 一旦初始化失敗就記住，避免每次播放都重複嘗試並洗版警告
+// 目前套用的主音量比例（0～1）。setMasterVolume() 可在 AudioContext 建立前後皆呼叫：
+// 建立前只記錄比例，ensureContext() 建立 gain node 時會讀取套用；建立後則立即生效。
+let masterVolumeRatio = DEFAULT_MASTER_GAIN;
 
 interface AudioContextConstructorWindow {
   AudioContext?: typeof AudioContext;
@@ -30,7 +33,7 @@ function ensureContext(): AudioContext | null {
     }
     audioContext = new Ctor();
     masterGainNode = audioContext.createGain();
-    masterGainNode.gain.value = MASTER_GAIN;
+    masterGainNode.gain.value = masterVolumeRatio;
     masterGainNode.connect(audioContext.destination);
     return audioContext;
   } catch (err) {
@@ -38,6 +41,16 @@ function ensureContext(): AudioContext | null {
     console.warn("[audio] AudioContext 建立失敗，音效停用（靜音續玩）：", err);
     return null;
   }
+}
+
+/**
+ * 套用設定系統的主音量（正式 API，見 core/settings.ts SettingsStore.setVolume）。
+ * volume0to100 會被 clamp 到 0～100 再換算成 0～1 比例；呼叫端不應直接改 masterGainNode。
+ */
+export function setMasterVolume(volume0to100: number): void {
+  const clamped = Math.max(0, Math.min(100, volume0to100));
+  masterVolumeRatio = clamped / 100;
+  if (masterGainNode) masterGainNode.gain.value = masterVolumeRatio;
 }
 
 /** 首次使用者手勢時呼叫（現有「點擊進入」畫面即手勢入口），嘗試建立並 resume AudioContext。 */

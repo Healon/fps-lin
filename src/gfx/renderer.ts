@@ -236,6 +236,8 @@ export class Renderer {
   private ceilingVao: WebGLVertexArrayObject | null = null;
   private ceilingIndexCount = 0;
   private projection: Mat4 = identity();
+  /** FOV（度）。PLAN §3.2：預設 90，可調 70 至 110；套用經 setFov()（core/settings.ts）。 */
+  private fovDegrees = 90;
 
   private readonly uniformLocations: Record<string, WebGLUniformLocation | null>;
 
@@ -382,8 +384,26 @@ export class Renderer {
       this.canvas.height = height;
     }
     gl.viewport(0, 0, width, height);
-    const aspect = width / height;
-    this.projection = perspective((90 * Math.PI) / 180, aspect, 0.1, 200);
+    this.updateProjection();
+  }
+
+  private updateProjection(): void {
+    const aspect = this.canvas.width / this.canvas.height;
+    this.projection = perspective((this.fovDegrees * Math.PI) / 180, aspect, 0.1, 200);
+  }
+
+  /**
+   * 套用設定系統的 FOV（正式 API，見 core/settings.ts SettingsStore.setFov）。
+   * 呼叫端負責 clamp 到合法範圍（70～110，PLAN §3.2）；本方法立即重算投影矩陣。
+   */
+  setFov(fovDegrees: number): void {
+    this.fovDegrees = fovDegrees;
+    this.updateProjection();
+  }
+
+  /** 目前套用的 FOV（度），供設定 UI 顯示同步與驗收讀取（見 window.__p96.debug.getFov）。 */
+  getFov(): number {
+    return this.fovDegrees;
   }
 
   render(viewMatrix: Mat4, cameraPos: Vec3, timeSeconds: number): void {

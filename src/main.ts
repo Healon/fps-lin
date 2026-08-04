@@ -6,6 +6,16 @@
 // 2026-08-04：加入第一人稱武器 viewmodel 與射擊視覺回饋（後座／槍口閃光／彈道 tracer／命中
 // 火花），回應 Lin 實玩回饋「開槍看不見、命中看不見」（根因：先前無 viewmodel、無任何射擊
 // 視覺特效）。效果生命週期見 game/effects.ts；渲染見 gfx/renderer.ts 的 renderViewmodel／renderFx。
+//
+// 2026-08-04（M2）：加入 game/state.ts 的三態遊戲狀態機（menu／playing／paused），收掉 HANDOFF
+// 待辦第 3 條技術債「開始畫面下遊戲邏輯已在跑」。每幀更新一律以 `gameState.state === "playing"`
+// 為唯一閘門：非 playing 時完全跳過玩家移動／武器／敵人／戰鬥／特效的模擬（渲染仍持續執行，
+// 世界維持在最後一個模擬幀，即「持續渲染但邏輯不更新」——見 game/state.ts 與本檔 syncUiForState
+// 註解）。__p96 的 fire()／damagePlayer() 等 debug hooks 刻意留在閘門之外，任何狀態都直接生效
+// （測試用後門，繞過狀態閘）；真實輸入路徑（input.firing、真實滑鼠／鍵盤）則一律被閘門擋住。
+// 另加入 core/settings.ts 的設定系統（靈敏度／音量／FOV，localStorage 持久化）與 ui/menu.ts 的
+// 暫停選單／設定面板，經由正式 API（player.setSensitivity／setMasterVolume／renderer.setFov）
+// 套用，不直接改模組內部常數。
 
 import { generateTestRoom } from "./procgen/level/room.ts";
 import { TEXTURE_SIZE } from "./procgen/texture/noise.ts";
@@ -34,9 +44,13 @@ import type { FireResult } from "./game/weapons.ts";
 import { PULSE_PISTOL_MAGAZINE } from "./game/weapons.ts";
 import { Combat, PLAYER_MAX_HP } from "./game/combat.ts";
 import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect } from "./game/effects.ts";
+import { GameStateMachine } from "./game/state.ts";
+import type { GameState } from "./game/state.ts";
+import { SettingsStore, createBrowserStorage } from "./core/settings.ts";
 import { Overlay } from "./ui/overlay.ts";
 import { Hud } from "./ui/hud.ts";
-import { resumeAudioOnGesture, playPlayerHurt, playRespawn } from "./audio/synth.ts";
+import { PauseMenu, SettingsPanel } from "./ui/menu.ts";
+import { resumeAudioOnGesture, playPlayerHurt, playRespawn, setMasterVolume } from "./audio/synth.ts";
 // window.__p96 的型別宣告見 ./types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效，
 // 不需 import；main.ts 為 esbuild bundle 的實際進入點，避免 import 一個 .d.ts 造成 bundler 誤解析）。
 
@@ -111,7 +125,33 @@ function buildSparkVertices(point: Vec3, offsets: Vec3[], kind: "enemy" | "wall"
 function boot(): void {
   const overlay = new Overlay();
   const hud = new Hud();
+  const pauseMenu = new PauseMenu();
+  const settingsStore = new SettingsStore(createBrowserStorage());
+  const settingsPanel = new SettingsPanel(settingsStore.get());
+  const gameState = new GameStateMachine();
   let loop: GameLoop | null = null;
+
+  /**
+   * 依目前狀態同步顯示哪個 UI 面板：唯一的顯示邏輯來源，任何狀態轉移（正常操作或
+   * __p96.debug.setState() 測試切態）一律經此函式生效，避免顯示邏輯散落各觸發點。
+   * paused／menu 皆隱藏準星（避免與選單文字重疊）；playing 則收起所有選單並顯示準星。
+   */
+  function syncUiForState(state: GameState): void {
+    if (state === "playing") {
+      overlay.hide();
+      pauseMenu.hide();
+      settingsPanel.hide();
+      overlay.showCrosshair();
+    } else if (state === "paused") {
+      pauseMenu.show();
+      overlay.hideCrosshair();
+    } else {
+      overlay.show();
+      overlay.hideCrosshair();
+    }
+  }
+  gameState.onChange((next) => syncUiForState(next));
+  syncUiForState(gameState.state); // 初始畫面＝menu：顯示主選單、隱藏準星
 
   try {
     const canvas = document.getElementById("glcanvas") as HTMLCanvasElement | null;
@@ -128,6 +168,7 @@ function boot(): void {
 
     // 3. 初始化 WebGL2 與 buffer
     const renderer = new Renderer(canvas);
+    renderer.setFov(settingsStore.get().fov); // 套用已儲存（或預設）的 FOV，正式 API（非改內部常數）
     renderer.uploadFloorGeometry(room.floorVertices, room.floorIndices);
     renderer.uploadFloorTexture(floorTexture.size, floorTexture.pixels);
     renderer.uploadWallGeometry(room.wallVertices, room.wallIndices);
@@ -138,10 +179,13 @@ function boot(): void {
 
     const spawnPosition: Vec3 = { x: 0, y: room.floorY, z: 7 };
     const player = new PlayerController(spawnPosition);
+    player.setSensitivity(settingsStore.get().sensitivity); // 正式 API，同時作用於方向鍵轉速
     const weapon = new PulsePistol();
     const combat = new Combat();
     let enemies: Crawler[] = room.enemySpawns.map((pos, i) => new Crawler(i, pos));
     let elapsedSeconds = 0;
+
+    setMasterVolume(settingsStore.get().volume); // 正式 API；可在 AudioContext 建立前呼叫（見 synth.ts）
 
     // 射擊視覺回饋狀態機（見 game/effects.ts）
     const recoil = new Recoil();
@@ -152,13 +196,58 @@ function boot(): void {
     let debugFreezeFx = false;
 
     const input = new InputManager(canvas, (locked) => {
-      if (!locked) overlay.show();
+      // Esc 或其他方式退出 pointer lock：只有在「正在遊玩」時才視為暫停操作；menu 狀態下
+      // （尚未鎖定過）不會觸發（見 core/input.ts：locked 由 true→false 才會呼叫本callback）。
+      if (!locked && gameState.state === "playing") {
+        gameState.pause();
+      }
     });
 
     overlay.onStart(() => {
-      overlay.hide();
+      gameState.start(); // menu → playing（syncUiForState 會收起主選單、顯示準星）
       input.requestPointerLock();
       resumeAudioOnGesture();
+    });
+
+    overlay.onSettings(() => {
+      overlay.hide();
+      settingsPanel.show();
+    });
+
+    pauseMenu.onResume(() => {
+      gameState.resume(); // paused → playing
+      input.requestPointerLock();
+    });
+
+    pauseMenu.onSettings(() => {
+      pauseMenu.hide();
+      settingsPanel.show();
+    });
+
+    pauseMenu.onRestart(() => {
+      resetLevelState({ resetCombat: true, playSound: false });
+      gameState.restart(); // paused → playing，從種子完整重建（重建動作見 resetLevelState）
+      input.requestPointerLock();
+    });
+
+    settingsPanel.onBack(() => {
+      settingsPanel.hide();
+      // 依「目前未變的」gameState 重新顯示正確的底層選單（menu 或 paused），
+      // 兩個入口共用同一份返回邏輯，不需額外追蹤「從哪裡打開設定」。
+      syncUiForState(gameState.state);
+    });
+
+    settingsPanel.onChange((field, value) => {
+      if (field === "sensitivity") {
+        settingsStore.setSensitivity(value);
+        player.setSensitivity(settingsStore.get().sensitivity);
+      } else if (field === "volume") {
+        settingsStore.setVolume(value);
+        setMasterVolume(settingsStore.get().volume);
+      } else if (field === "fov") {
+        settingsStore.setFov(value);
+        renderer.setFov(settingsStore.get().fov);
+      }
     });
 
     /** 對玩家造成傷害的共用路徑：命中即播放受傷音效（供敵人近戰與 debug hook 共用）。 */
@@ -198,8 +287,13 @@ function boot(): void {
       }
     }
 
-    /** 死亡重生：玩家、敵人、彈藥全部從種子重建（PLAN M1 AC）。 */
-    function resetForRespawn(): void {
+    /**
+     * 重建關卡執行期狀態：玩家、敵人、武器彈藥一律從種子重建。
+     * resetCombat＝true 時額外硬重置戰鬥狀態（HP／無敵／死亡旗標，供暫停選單「重新開始」
+     * 使用）；自然死亡重生路徑（下方 combat.update() 觸發）已由 Combat.update() 自行處理
+     * HP／死亡旗標重置，故該路徑傳 resetCombat:false 避免重複動作。
+     */
+    function resetLevelState(opts: { resetCombat: boolean; playSound: boolean }): void {
       player.position = { ...spawnPosition };
       player.yaw = 0;
       player.pitch = 0;
@@ -207,7 +301,8 @@ function boot(): void {
       player.grounded = false;
       enemies = room.enemySpawns.map((pos, i) => new Crawler(i, pos));
       weapon.reset();
-      playRespawn();
+      if (opts.resetCombat) combat.reset();
+      if (opts.playSound) playRespawn();
     }
 
     // 4. 供 Playwright 與手動驗收讀取／操控的全域 debug hooks
@@ -215,9 +310,14 @@ function boot(): void {
       ready: true,
       frames: 0,
       levelHash: room.levelHash,
+      get gameState() {
+        return gameState.state;
+      },
       enemiesAlive: () => enemies.filter((e) => e.state !== "dead").length,
       playerHp: () => combat.playerHp,
+      ammo: () => weapon.ammo,
       fire: () => {
+        // debug 手段：任何遊戲狀態下都直接生效，繞過真實輸入路徑的狀態閘（本次派工規格）。
         const eye = player.getEyePosition();
         const forward = forwardFromYawPitch(player.yaw, player.pitch);
         const result = weapon.tryFire(eye, forward, room.colliders, enemies);
@@ -257,6 +357,9 @@ function boot(): void {
           enemies
             .filter((e) => e.state !== "dead")
             .map((e) => ({ x: e.position.x, y: e.position.y, z: e.position.z, yaw: e.yaw, state: e.state })),
+        setState: (state: GameState) => gameState.setState(state),
+        getSettings: () => settingsStore.get(),
+        getFov: () => renderer.getFov(),
       },
     };
 
@@ -264,38 +367,43 @@ function boot(): void {
     loop = new GameLoop((dt) => {
       try {
         elapsedSeconds += dt;
-        const mouseDelta = input.consumeMouseDelta();
-        player.update(dt, input.state, mouseDelta, room.colliders);
+        const mouseDelta = input.consumeMouseDelta(); // 每幀排空，避免暫停期間堆積（見下方閘門）
 
-        // debug.setFreezeFx(true) 時，一切「隨時間衰減」的狀態（武器冷卻、後座／槍口閃光／
-        // tracer／火花、敵人 hitFlash、combat 無敵與紅暈）全部凍結在觸發當下，方便截圖。
-        const simDt = debugFreezeFx ? 0 : dt;
+        // 狀態閘：非 playing（menu／paused）時完全跳過模擬（玩家移動、武器、敵人、戰鬥、特效），
+        // 只保留渲染（見上方檔頭註解與 game/state.ts）。debug hooks（fire()／damagePlayer() 等）
+        // 定義在此閘門之外（見上方 window.__p96），任何狀態都能直接生效。
+        if (gameState.state === "playing") {
+          player.update(dt, input.state, mouseDelta, room.colliders);
 
-        weapon.update(simDt);
-        if (input.firing && weapon.canFire) {
-          const eye = player.getEyePosition();
-          const forward = forwardFromYawPitch(player.yaw, player.pitch);
-          const result = weapon.tryFire(eye, forward, room.colliders, enemies);
-          handleFireResult(result);
+          const simDt = debugFreezeFx ? 0 : dt;
+
+          weapon.update(simDt);
+          if (input.firing && weapon.canFire) {
+            const eye = player.getEyePosition();
+            const forward = forwardFromYawPitch(player.yaw, player.pitch);
+            const result = weapon.tryFire(eye, forward, room.colliders, enemies);
+            handleFireResult(result);
+          }
+
+          recoil.update(simDt);
+          muzzleFlash.update(simDt);
+          tracer.update(simDt);
+          spark.update(simDt);
+
+          const playerFeet = player.position;
+          const playerEyeForEnemies = player.getEyePosition();
+          for (const enemy of enemies) {
+            const attackEvent = enemy.update(simDt, playerFeet, playerEyeForEnemies, room.colliders);
+            if (attackEvent) applyDamageToPlayer(attackEvent.damage);
+          }
+          enemies = enemies.filter((e) => !e.removable);
+
+          const respawnTriggered = combat.update(simDt);
+          if (respawnTriggered) resetLevelState({ resetCombat: false, playSound: true });
         }
-
-        recoil.update(simDt);
-        muzzleFlash.update(simDt);
-        tracer.update(simDt);
-        spark.update(simDt);
-
-        const playerFeet = player.position;
-        const playerEye = player.getEyePosition();
-        for (const enemy of enemies) {
-          const attackEvent = enemy.update(simDt, playerFeet, playerEye, room.colliders);
-          if (attackEvent) applyDamageToPlayer(attackEvent.damage);
-        }
-        enemies = enemies.filter((e) => !e.removable);
-
-        const respawnTriggered = combat.update(simDt);
-        if (respawnTriggered) resetForRespawn();
 
         const viewMatrix = player.getViewMatrix();
+        const playerEye = player.getEyePosition();
 
         // 世界：地板／牆面／天花板 → 敵人 → 世界空間 FX（tracer／火花，依實際 view/projection）
         renderer.render(viewMatrix, playerEye, elapsedSeconds);

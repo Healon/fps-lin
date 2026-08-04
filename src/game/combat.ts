@@ -45,6 +45,19 @@ export class Combat {
     return true;
   }
 
+  /**
+   * 硬重置：不論目前是否死亡，一律回到滿血、無敵時間與紅暈歸零、死亡旗標清除。
+   * 供「重新開始」（暫停選單，M2）使用，與 update() 內建的死亡自動重生路徑分開——
+   * 那條路徑只在 playerHp 真的歸零時才觸發，本方法是任意時刻的手動硬重置。
+   */
+  reset(): void {
+    this.playerHp = PLAYER_MAX_HP;
+    this.invulnRemaining = 0;
+    this.hurtFlashRemaining = 0;
+    this.respawnRemaining = 0;
+    this.dead = false;
+  }
+
   /** 每幀呼叫。回傳 true 代表本幀觸發重生，呼叫端應重建玩家位置／敵人／彈藥狀態。 */
   update(dt: number): boolean {
     if (this.invulnRemaining > 0) this.invulnRemaining = Math.max(0, this.invulnRemaining - dt);

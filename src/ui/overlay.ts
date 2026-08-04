@@ -1,6 +1,10 @@
 // HTML overlay：標題「PROJECT 96 [M0]」、「點擊進入」提示、簡易準星（CSS 十字）。
 // 點擊後隱藏並要求 pointer lock；退出 lock（Esc）由呼叫端重新呼叫 show() 重現 overlay。
 // 全部以行內樣式建立元素，不引入外部 CSS 檔，符合單檔輸出精神。
+//
+// 2026-08-04（M2）：主選單新增「設定」按鈕入口（onSettings()），並加入準星顯隱控制
+// （showCrosshair／hideCrosshair）：非 playing 狀態（menu／paused／設定畫面）隱藏準星，
+// 避免與選單文字重疊；由 main.ts 的 gameState 狀態機統一驅動（見 game/state.ts）。
 
 const COLOR_BG = "#08090B";
 const COLOR_PANEL = "#16191D";
@@ -14,6 +18,7 @@ export class Overlay {
   private readonly errorPanel: HTMLDivElement;
   private readonly crosshairBars: HTMLDivElement[] = [];
   private onStartCallback: (() => void) | null = null;
+  private onSettingsCallback: (() => void) | null = null;
 
   constructor(container: HTMLElement = document.body) {
     this.startPanel = this.buildStartPanel();
@@ -50,7 +55,7 @@ export class Overlay {
     });
 
     const title = document.createElement("div");
-    title.textContent = "PROJECT 96［M1］";
+    title.textContent = "PROJECT 96［M2］";
     Object.assign(title.style, {
       fontSize: "clamp(24px, 5vw, 48px)",
       fontWeight: "700",
@@ -82,9 +87,32 @@ export class Overlay {
       lineHeight: "2",
     });
 
+    const settingsButton = document.createElement("button");
+    settingsButton.textContent = "設定";
+    settingsButton.dataset["role"] = "menu-settings-button";
+    Object.assign(settingsButton.style, {
+      marginTop: "8px",
+      padding: "8px 24px",
+      background: "transparent",
+      border: `1px solid ${COLOR_ACCENT}`,
+      borderRadius: "4px",
+      color: COLOR_ACCENT,
+      fontSize: "14px",
+      letterSpacing: "0.1em",
+      cursor: "pointer",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+    });
+    // stopPropagation：settingsButton 是 startPanel 的子元素，startPanel 本身也有點擊即開始的
+    // 監聽器，不擋住冒泡的話點「設定」會同時觸發開始遊戲。
+    settingsButton.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.onSettingsCallback?.();
+    });
+
     el.appendChild(title);
     el.appendChild(prompt);
     el.appendChild(controls);
+    el.appendChild(settingsButton);
     return el;
   }
 
@@ -177,12 +205,24 @@ export class Overlay {
     this.onStartCallback = callback;
   }
 
+  onSettings(callback: () => void): void {
+    this.onSettingsCallback = callback;
+  }
+
   show(): void {
     this.startPanel.style.display = "flex";
   }
 
   hide(): void {
     this.startPanel.style.display = "none";
+  }
+
+  showCrosshair(): void {
+    this.crosshair.style.display = "block";
+  }
+
+  hideCrosshair(): void {
+    this.crosshair.style.display = "none";
   }
 
   showError(message: string): void {
