@@ -1,28 +1,29 @@
-// boot 流程：生成關卡（含敵人配置）→ 生成材質、敵人模型、武器 viewmodel → 初始化 GL 與 buffer →
-// 設 window.__p96 → 啟動迴圈。
+// boot 流程：生成關卡（含門／撿取物／敵人配置）→ 生成材質、模型、武器 viewmodel、門板與撿取物
+// props → 初始化 GL 與 buffer → 設 window.__p96 → 啟動迴圈。
 // 渲染迴圈不等點擊就開跑（點擊只負責 pointer lock 與音訊手勢），讓自動化測試不需手勢即可驗 frames。
 // 任何 boot 或執行期錯誤一律顯示在 overlay 上，禁止靜默失敗。
 //
-// 2026-08-04：加入第一人稱武器 viewmodel 與射擊視覺回饋（後座／槍口閃光／彈道 tracer／命中
-// 火花），回應 Lin 實玩回饋「開槍看不見、命中看不見」（根因：先前無 viewmodel、無任何射擊
-// 視覺特效）。效果生命週期見 game/effects.ts；渲染見 gfx/renderer.ts 的 renderViewmodel／renderFx。
-//
-// 2026-08-04（M2）：加入 game/state.ts 的三態遊戲狀態機（menu／playing／paused），收掉 HANDOFF
-// 待辦第 3 條技術債「開始畫面下遊戲邏輯已在跑」。每幀更新一律以 `gameState.state === "playing"`
-// 為唯一閘門：非 playing 時完全跳過玩家移動／武器／敵人／戰鬥／特效的模擬（渲染仍持續執行，
-// 世界維持在最後一個模擬幀，即「持續渲染但邏輯不更新」——見 game/state.ts 與本檔 syncUiForState
-// 註解）。__p96 的 fire()／damagePlayer() 等 debug hooks 刻意留在閘門之外，任何狀態都直接生效
-// （測試用後門，繞過狀態閘）；真實輸入路徑（input.firing、真實滑鼠／鍵盤）則一律被閘門擋住。
-// 另加入 core/settings.ts 的設定系統（靈敏度／音量／FOV，localStorage 持久化）與 ui/menu.ts 的
-// 暫停選單／設定面板，經由正式 API（player.setSensitivity／setMasterVolume／renderer.setFov）
-// 套用，不直接改模組內部常數。
+// 2026-08-04（M2 第二階段）：垂直切片主體。取代 M0/M1 的單一測試房（procgen/level/room.ts 已
+// 整檔刪除，改用 procgen/level/level.ts 的 generateLevel()：區域 A 甦醒室 → 通道 A-B → 區域 B
+// 維修走廊 → 門 B → 區域 C 熔爐大廳（伏擊）→ 終點門 → 終點觸發區）。新增：門系統
+// （game/doors.ts，依條件加玩家靠近距離自動滑開）、撿取系統（武器／彈藥／醫療包）、散射槍
+// （game/shotgun.ts）與武器庫存（game/inventory.ts，撿取前赤手空拳、未擁有武器不可切換）、
+// 通關畫面（ui/menu.ts WinScreen，走 game/state.ts 新增的 "complete" 狀態）。
+// 舊有 M1 特效系統（後座／槍口閃光／單發 tracer／火花，見 game/effects.ts）沿用於脈衝手槍；
+// 散射槍因單次開火即產生 6 珠命中，改用本檔內的多筆 tracer／spark 陣列（見下方
+// SHOTGUN_TRACER_LIFETIME 區塊），不擴充 effects.ts 的單槽狀態機。
 
-import { generateTestRoom } from "./procgen/level/room.ts";
+import { generateLevel, DOOR_OPEN_SLIDE_DISTANCE } from "./procgen/level/level.ts";
+import type { PickupDef, PickupKind, EnemyArea } from "./procgen/level/level.ts";
+import type { Aabb } from "./procgen/level/level.ts";
 import { TEXTURE_SIZE } from "./procgen/texture/noise.ts";
 import { generateFloorFlagstoneTexture } from "./procgen/texture/flagstone.ts";
 import { generateCastleWallTexture } from "./procgen/texture/castle.ts";
 import { generateCrawlerMesh } from "./procgen/mesh/crawler.ts";
 import { generatePistolMesh } from "./procgen/mesh/pistol.ts";
+import { generateShotgunMesh } from "./procgen/mesh/shotgun.ts";
+import { generateDoorMesh } from "./procgen/mesh/door.ts";
+import { generateAmmoBoxMesh, generateMedkitBoxMesh } from "./procgen/mesh/pickup-props.ts";
 import { Renderer } from "./gfx/renderer.ts";
 import type { EnemyInstance } from "./gfx/renderer.ts";
 import { InputManager } from "./core/input.ts";
@@ -33,24 +34,41 @@ import {
   yawPitchFromDirection,
   translationMat4,
   translationRotationYMat4,
+  rotationYMat4,
+  trsMat4,
+  multiply,
   identity,
   normalizeVec3,
   subVec3,
   type Vec3,
+  type Mat4,
 } from "./core/math.ts";
 import { Crawler } from "./game/enemy.ts";
-import { PulsePistol } from "./game/weapons.ts";
-import type { FireResult } from "./game/weapons.ts";
+import type { EnemyState } from "./game/enemy.ts";
+import type { FireResult, WeaponId } from "./game/weapons.ts";
 import { PULSE_PISTOL_MAGAZINE } from "./game/weapons.ts";
+import type { ScatterFireResult } from "./game/shotgun.ts";
+import { SCATTER_MAGAZINE } from "./game/shotgun.ts";
+import { WeaponInventory } from "./game/inventory.ts";
 import { Combat, PLAYER_MAX_HP } from "./game/combat.ts";
-import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect } from "./game/effects.ts";
+import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect, WeaponSwitchEffect } from "./game/effects.ts";
+import { DoorSystem } from "./game/doors.ts";
+import type { DoorRuntimeContext } from "./game/doors.ts";
 import { GameStateMachine } from "./game/state.ts";
 import type { GameState } from "./game/state.ts";
 import { SettingsStore, createBrowserStorage } from "./core/settings.ts";
 import { Overlay } from "./ui/overlay.ts";
 import { Hud } from "./ui/hud.ts";
-import { PauseMenu, SettingsPanel } from "./ui/menu.ts";
-import { resumeAudioOnGesture, playPlayerHurt, playRespawn, setMasterVolume } from "./audio/synth.ts";
+import { PauseMenu, SettingsPanel, WinScreen } from "./ui/menu.ts";
+import {
+  resumeAudioOnGesture,
+  playPlayerHurt,
+  playRespawn,
+  playPickup,
+  playSwitch,
+  playDoorMove,
+  setMasterVolume,
+} from "./audio/synth.ts";
 // window.__p96 的型別宣告見 ./types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效，
 // 不需 import；main.ts 為 esbuild bundle 的實際進入點，避免 import 一個 .d.ts 造成 bundler 誤解析）。
 
@@ -67,16 +85,31 @@ function clamp(v: number, lo: number, hi: number): number {
 const VIEWMODEL_BASE_OFFSET: Vec3 = { x: 0.16, y: -0.13, z: -0.32 };
 const RECOIL_KICK_Y = 0.045; // 後座往上
 const RECOIL_KICK_Z = 0.06; // 後座往後（朝玩家）
+const WEAPON_SWITCH_DIP_Y = 0.12; // 武器切換下收幅度
 
 const MUZZLE_FLASH_HALF_SIZE = 0.045;
 const MUZZLE_FLASH_COLOR: [number, number, number, number] = [0.85, 0.98, 1.0, 0.9]; // 青白
 const TRACER_COLOR: [number, number, number, number] = [0.35, 0.88, 1.0, 0.85]; // 能源青
-// 警示橘偏白熾亮（比敵人自身的警示橘 #FF5A26 更亮更白，避免與敵人本體警示色混在一起分不出
-// 是「敵人」還是「火花」；命中牆面則用暗一階琥珀，兩者需一眼可分）。
+// 警示橘偏白熾亮（比敵人自身的警示橘 #FF5A26 更亮更白），命中牆面則用暗一階琥珀。
 const SPARK_COLOR_ENEMY: [number, number, number] = [1.0, 0.62, 0.35];
 const SPARK_COLOR_WALL: [number, number, number] = [0.55, 0.36, 0.15];
 const SPARK_COUNT = 6;
 const SPARK_JITTER = 0.08; // m
+
+const PICKUP_RADIUS = 0.8; // m，PLAN 本次派工規格：走近 0.8m 自動拾取
+const AMMO_PISTOL_PICKUP_AMOUNT = 24;
+const AMMO_SHOTGUN_PICKUP_AMOUNT = 12;
+const MEDKIT_HEAL_AMOUNT = 25;
+
+const PICKUP_BOB_AMPLITUDE = 0.06;
+const PICKUP_BOB_SPEED = 1.6; // rad/s
+const PICKUP_ROTATE_SPEED = 1.1; // rad/s
+const WEAPON_PICKUP_SCALE = 2.4;
+const WEAPON_PICKUP_HEIGHT = 1.0; // 地面上方懸浮高度
+const PROP_PICKUP_HEIGHT = 0.75;
+
+const SHOTGUN_TRACER_LIFETIME = 0.06;
+const SHOTGUN_SPARK_LIFETIME = 0.15;
 
 /** 由 view-space 偏移（viewmodel 錨定慣例）換算世界座標，供 tracer 起點等視覺用途。 */
 function viewOffsetToWorld(eye: Vec3, yaw: number, pitch: number, offset: Vec3): Vec3 {
@@ -113,6 +146,16 @@ function buildTracerVertices(origin: Vec3, hitPoint: Vec3): Float32Array {
   return new Float32Array([origin.x, origin.y, origin.z, r, g, b, a, hitPoint.x, hitPoint.y, hitPoint.z, r, g, b, a]);
 }
 
+/** 多筆彈道 tracer 一次組成單一 LINES 頂點緩衝（散射槍每次開火 6 珠共用一次 renderFx 呼叫）。 */
+function buildMultiTracerVertices(segments: { origin: Vec3; hitPoint: Vec3 }[]): Float32Array {
+  const [r, g, b, a] = TRACER_COLOR;
+  const verts: number[] = [];
+  for (const seg of segments) {
+    verts.push(seg.origin.x, seg.origin.y, seg.origin.z, r, g, b, a, seg.hitPoint.x, seg.hitPoint.y, seg.hitPoint.z, r, g, b, a);
+  }
+  return new Float32Array(verts);
+}
+
 function buildSparkVertices(point: Vec3, offsets: Vec3[], kind: "enemy" | "wall", alpha: number): Float32Array {
   const [r, g, b] = kind === "enemy" ? SPARK_COLOR_ENEMY : SPARK_COLOR_WALL;
   const verts: number[] = [];
@@ -122,10 +165,29 @@ function buildSparkVertices(point: Vec3, offsets: Vec3[], kind: "enemy" | "wall"
   return new Float32Array(verts);
 }
 
+/** 多個命中點各畫一個點（散射槍多珠命中回饋），不做每點抖動叢集（時間預算考量，一點足以標示命中位置）。 */
+function buildMultiSparkVertices(hits: { point: Vec3; kind: "enemy" | "wall" }[], alpha: number): Float32Array {
+  const verts: number[] = [];
+  for (const h of hits) {
+    const [r, g, b] = h.kind === "enemy" ? SPARK_COLOR_ENEMY : SPARK_COLOR_WALL;
+    verts.push(h.point.x, h.point.y, h.point.z, r, g, b, alpha);
+  }
+  return new Float32Array(verts);
+}
+
+function pointInAabb(p: Vec3, aabb: Aabb): boolean {
+  return p.x >= aabb.min.x && p.x <= aabb.max.x && p.y >= aabb.min.y && p.y <= aabb.max.y && p.z >= aabb.min.z && p.z <= aabb.max.z;
+}
+
+function distanceXZ(a: Vec3, b: Vec3): number {
+  return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
 function boot(): void {
   const overlay = new Overlay();
   const hud = new Hud();
   const pauseMenu = new PauseMenu();
+  const winScreen = new WinScreen();
   const settingsStore = new SettingsStore(createBrowserStorage());
   const settingsPanel = new SettingsPanel(settingsStore.get());
   const gameState = new GameStateMachine();
@@ -133,21 +195,31 @@ function boot(): void {
 
   /**
    * 依目前狀態同步顯示哪個 UI 面板：唯一的顯示邏輯來源，任何狀態轉移（正常操作或
-   * __p96.debug.setState() 測試切態）一律經此函式生效，避免顯示邏輯散落各觸發點。
-   * paused／menu 皆隱藏準星（避免與選單文字重疊）；playing 則收起所有選單並顯示準星。
+   * __p96.debug.setState() 測試切態）一律經此函式生效。complete 狀態的 WinScreen 內容
+   * （時間／擊殺數）由 triggerLevelComplete() 於觸發當下另行寫入，本函式只管顯隱切換。
    */
   function syncUiForState(state: GameState): void {
     if (state === "playing") {
       overlay.hide();
       pauseMenu.hide();
       settingsPanel.hide();
+      winScreen.hide();
       overlay.showCrosshair();
     } else if (state === "paused") {
       pauseMenu.show();
       overlay.hideCrosshair();
+    } else if (state === "complete") {
+      overlay.hide();
+      pauseMenu.hide();
+      settingsPanel.hide();
+      overlay.hideCrosshair();
+      // winScreen 本身的 show() 已由 triggerLevelComplete／debug.forceComplete 呼叫，這裡不重複顯示。
     } else {
       overlay.show();
       overlay.hideCrosshair();
+      winScreen.hide();
+      pauseMenu.hide();
+      settingsPanel.hide();
     }
   }
   gameState.onChange((next) => syncUiForState(next));
@@ -157,43 +229,85 @@ function boot(): void {
     const canvas = document.getElementById("glcanvas") as HTMLCanvasElement | null;
     if (!canvas) throw new Error("找不到 #glcanvas 元素。");
 
-    // 1. CPU 生成關卡資料（純決定性：碰撞 AABB、敵人配置、levelHash）
-    const room = generateTestRoom();
+    // 1. CPU 生成關卡資料（純決定性：碰撞 AABB、門、撿取物、敵人配置、levelHash）
+    const genStart = performance.now();
+    const level = generateLevel();
 
-    // 2. 生成材質、敵人模型、武器 viewmodel（外觀，CPU 決定性但非玩法決定性鐵則要求範圍）
+    // 2. 生成材質、模型、武器 viewmodel、門板與撿取物 props（外觀，CPU 決定性但非玩法決定性鐵則要求範圍）
     const floorTexture = generateFloorFlagstoneTexture(TEXTURE_SIZE);
     const wallTexture = generateCastleWallTexture(TEXTURE_SIZE);
     const crawlerMesh = generateCrawlerMesh();
     const pistolMesh = generatePistolMesh();
+    const shotgunMesh = generateShotgunMesh();
+    const doorMesh = generateDoorMesh();
+    const ammoBoxMesh = generateAmmoBoxMesh();
+    const medkitBoxMesh = generateMedkitBoxMesh();
+    const genElapsedMs = performance.now() - genStart;
+    console.log(`[perf] 關卡與外觀生成耗時 ${genElapsedMs.toFixed(2)}ms（預算 5000ms，上限 15000ms，PLAN §7.4）`);
 
     // 3. 初始化 WebGL2 與 buffer
     const renderer = new Renderer(canvas);
     renderer.setFov(settingsStore.get().fov); // 套用已儲存（或預設）的 FOV，正式 API（非改內部常數）
-    renderer.uploadFloorGeometry(room.floorVertices, room.floorIndices);
+    renderer.uploadFloorGeometry(level.floorVertices, level.floorIndices);
     renderer.uploadFloorTexture(floorTexture.size, floorTexture.pixels);
-    renderer.uploadWallGeometry(room.wallVertices, room.wallIndices);
+    renderer.uploadWallGeometry(level.wallVertices, level.wallIndices);
     renderer.uploadWallTexture(wallTexture.size, wallTexture.pixels);
-    renderer.uploadCeilingGeometry(room.ceilingVertices, room.ceilingIndices);
+    renderer.uploadCeilingGeometry(level.ceilingVertices, level.ceilingIndices);
     renderer.uploadEnemyGeometry(crawlerMesh.vertices, crawlerMesh.indices);
     renderer.uploadViewmodelGeometry(pistolMesh.vertices, pistolMesh.indices);
+    renderer.uploadShotgunViewmodelGeometry(shotgunMesh.vertices, shotgunMesh.indices);
+    renderer.uploadPropGeometry("door", doorMesh.vertices, doorMesh.indices);
+    renderer.uploadPropGeometry("pickup-pistol", pistolMesh.vertices, pistolMesh.indices);
+    renderer.uploadPropGeometry("pickup-shotgun", shotgunMesh.vertices, shotgunMesh.indices);
+    renderer.uploadPropGeometry("pickup-ammo", ammoBoxMesh.vertices, ammoBoxMesh.indices);
+    renderer.uploadPropGeometry("pickup-medkit", medkitBoxMesh.vertices, medkitBoxMesh.indices);
 
-    const spawnPosition: Vec3 = { x: 0, y: room.floorY, z: 7 };
-    const player = new PlayerController(spawnPosition);
+    const player = new PlayerController(level.playerSpawn);
     player.setSensitivity(settingsStore.get().sensitivity); // 正式 API，同時作用於方向鍵轉速
-    const weapon = new PulsePistol();
+    const inventory = new WeaponInventory();
     const combat = new Combat();
-    let enemies: Crawler[] = room.enemySpawns.map((pos, i) => new Crawler(i, pos));
+    const doorSystem = new DoorSystem(level.doors);
+    doorSystem.onOpenStart(() => playDoorMove());
+
+    let nextEnemyId = 0;
+    function spawnAreaEnemies(area: EnemyArea, initialState: EnemyState): Crawler[] {
+      return level.enemySpawns.filter((e) => e.area === area).map((e) => new Crawler(nextEnemyId++, e.pos, initialState, e.area));
+    }
+    let enemies: Crawler[] = spawnAreaEnemies("B", "idle");
+    let ambushTriggered = false;
+
+    interface PickupRuntime {
+      def: PickupDef;
+      collected: boolean;
+    }
+    let pickupRuntimes: PickupRuntime[] = level.pickups.map((def) => ({ def, collected: false }));
+
     let elapsedSeconds = 0;
+    let killCount = 0;
+    let runStartSeconds: number | null = null;
+
+    /** 目前計入碰撞的清單：靜態關卡幾何加尚未完全開啟的門（每次呼叫即時計算，供玩家移動、
+     *  敵人移動與視線、武器 raycast 共用；門數量極小，逐次重算成本可忽略）。 */
+    function activeColliders(): Aabb[] {
+      return [...level.colliders, ...doorSystem.activeColliders()];
+    }
 
     setMasterVolume(settingsStore.get().volume); // 正式 API；可在 AudioContext 建立前呼叫（見 synth.ts）
 
-    // 射擊視覺回饋狀態機（見 game/effects.ts）
+    // 射擊視覺回饋狀態機（脈衝手槍沿用 M1 單槽狀態機，見 game/effects.ts）
     const recoil = new Recoil();
     const muzzleFlash = new MuzzleFlashEffect();
     const tracer = new TracerEffect();
     const spark = new SparkEffect();
+    const weaponSwitchFx = new WeaponSwitchEffect();
     let sparkJitterOffsets: Vec3[] = [];
     let debugFreezeFx = false;
+
+    // 散射槍多珠 tracer／spark（見檔頭註解：單槽狀態機無法容納一次 6 珠，改用陣列＋計時器）。
+    let shotgunTracerElapsed = SHOTGUN_TRACER_LIFETIME;
+    let shotgunTracerData: { origin: Vec3; hitPoint: Vec3 }[] = [];
+    let shotgunSparkElapsed = SHOTGUN_SPARK_LIFETIME;
+    let shotgunSparkData: { point: Vec3; kind: "enemy" | "wall" }[] = [];
 
     const input = new InputManager(canvas, (locked) => {
       // Esc 或其他方式退出 pointer lock：只有在「正在遊玩」時才視為暫停操作；menu 狀態下
@@ -204,6 +318,9 @@ function boot(): void {
     });
 
     overlay.onStart(() => {
+      // 每次「點擊進入」（含首次開始與通關後返回主選單再開始）一律先從種子完整重建，
+      // 確保每輪都是乾淨的完整流程（本次派工規格：「回主選單後可重新開始完整流程」）。
+      resetLevelState({ resetCombat: true, playSound: false });
       gameState.start(); // menu → playing（syncUiForState 會收起主選單、顯示準星）
       input.requestPointerLock();
       resumeAudioOnGesture();
@@ -228,6 +345,10 @@ function boot(): void {
       resetLevelState({ resetCombat: true, playSound: false });
       gameState.restart(); // paused → playing，從種子完整重建（重建動作見 resetLevelState）
       input.requestPointerLock();
+    });
+
+    winScreen.onReturnToMenu(() => {
+      gameState.setState("menu");
     });
 
     settingsPanel.onBack(() => {
@@ -257,11 +378,79 @@ function boot(): void {
       return applied;
     }
 
+    /** 觸發區域 C 伏擊：出生即直接進 chase（跳過 idle 偵測，direct aggro，本次派工規格）。 */
+    function triggerAmbush(): void {
+      if (ambushTriggered) return;
+      ambushTriggered = true;
+      enemies = enemies.concat(spawnAreaEnemies("C", "chase"));
+    }
+
+    /** 撿取生效：套用對應效果、播音效、顯示 HUD toast；散射槍額外觸發伏擊。 */
+    function collectPickup(pr: PickupRuntime): void {
+      pr.collected = true;
+      playPickup();
+      switch (pr.def.kind) {
+        case "weapon-pistol":
+          inventory.give("pistol");
+          hud.showToast("拾取脈衝手槍");
+          break;
+        case "weapon-shotgun":
+          inventory.give("shotgun");
+          hud.showToast("拾取散射槍");
+          triggerAmbush();
+          break;
+        case "ammo-pistol":
+          inventory.addAmmo("pistol", AMMO_PISTOL_PICKUP_AMOUNT);
+          hud.showToast(`拾取彈藥 +${AMMO_PISTOL_PICKUP_AMOUNT}`);
+          break;
+        case "ammo-shotgun":
+          inventory.addAmmo("shotgun", AMMO_SHOTGUN_PICKUP_AMOUNT);
+          hud.showToast(`拾取彈藥 +${AMMO_SHOTGUN_PICKUP_AMOUNT}`);
+          break;
+        case "medkit": {
+          const healed = combat.heal(MEDKIT_HEAL_AMOUNT);
+          hud.showToast(`生命 +${healed}`);
+          break;
+        }
+      }
+    }
+
+    function grantWeaponDebug(id: WeaponId): void {
+      const kind: PickupKind = id === "pistol" ? "weapon-pistol" : "weapon-shotgun";
+      const pr = pickupRuntimes.find((p) => p.def.kind === kind && !p.collected);
+      if (pr) {
+        collectPickup(pr);
+        return;
+      }
+      inventory.give(id);
+      if (id === "shotgun") triggerAmbush();
+    }
+
     /**
-     * 開火成功後觸發全部視覺回饋：後座、槍口閃光一律觸發；tracer 只要開火就顯示（讓每一發
-     * 「射出去」可見）；火花只在真的命中（敵人或牆面）時觸發，讓命中與未命中一眼可分。
+     * 共用開火路徑：依 inventory.current 決定驅動哪把武器，回傳是否真的開火。
+     * 供真實輸入路徑（input.firing 且狀態為 playing）與 debug.fire() 共用；debug 呼叫時
+     * activeColliders()／enemies 皆與遊戲狀態無關，天然可在任何狀態下直接生效。
      */
+    function performFire(): boolean {
+      const current = inventory.current;
+      if (!current) return false;
+      const eye = player.getEyePosition();
+      const forward = forwardFromYawPitch(player.yaw, player.pitch);
+      const colliders = activeColliders();
+
+      if (current === "pistol") {
+        const result = inventory.pistol.tryFire(eye, forward, colliders, enemies);
+        handleFireResult(result);
+        return result.fired;
+      }
+      const result = inventory.shotgun.tryFire(eye, forward, colliders, enemies);
+      handleShotgunFireResult(result);
+      return result.fired;
+    }
+
+    /** 脈衝手槍開火視覺回饋（沿用 M1 單槽特效狀態機）。 */
     function handleFireResult(result: FireResult): void {
+      if (result.died) killCount++;
       if (!result.fired || !result.hitPoint) return;
 
       recoil.trigger();
@@ -275,9 +464,6 @@ function boot(): void {
       tracer.trigger({ origin: muzzleWorld, hitPoint: result.hitPoint });
 
       if (result.hitKind !== "none") {
-        // 火花抖動只在觸發當下產生一次，後續幀沿用同一組偏移，避免每幀重新隨機造成雜訊閃爍；
-        // 純視覺粒子噴濺，非玩法決定性資料，容許使用 Math.random()（PLAN §6.4 決定性鐵則
-        // 只約束關卡佈局／碰撞／敵人與物品配置等玩法資料，不含這類一次性瞬時特效）。
         sparkJitterOffsets = Array.from({ length: SPARK_COUNT }, () => ({
           x: (Math.random() * 2 - 1) * SPARK_JITTER,
           y: (Math.random() * 2 - 1) * SPARK_JITTER,
@@ -287,21 +473,60 @@ function boot(): void {
       }
     }
 
+    /** 散射槍開火視覺回饋：6 珠一次觸發，改用本檔的多筆 tracer／spark 陣列（見檔頭註解）。 */
+    function handleShotgunFireResult(result: ScatterFireResult): void {
+      for (const p of result.pellets) if (p.died) killCount++;
+      if (!result.fired) return;
+
+      recoil.trigger();
+      muzzleFlash.trigger();
+
+      const muzzleWorld = viewOffsetToWorld(player.getEyePosition(), player.yaw, player.pitch, {
+        x: VIEWMODEL_BASE_OFFSET.x + shotgunMesh.muzzleLocal.x,
+        y: VIEWMODEL_BASE_OFFSET.y + shotgunMesh.muzzleLocal.y,
+        z: VIEWMODEL_BASE_OFFSET.z + shotgunMesh.muzzleLocal.z,
+      });
+      shotgunTracerData = result.pellets.map((p) => ({ origin: muzzleWorld, hitPoint: p.hitPoint }));
+      shotgunTracerElapsed = 0;
+
+      const hitPellets = result.pellets.filter((p) => p.hitKind !== "none");
+      if (hitPellets.length > 0) {
+        shotgunSparkData = hitPellets.map((p) => ({ point: p.hitPoint, kind: (p.hitKind === "enemy" ? "enemy" : "wall") as "enemy" | "wall" }));
+        shotgunSparkElapsed = 0;
+      }
+    }
+
+    function triggerLevelComplete(): void {
+      if (gameState.state !== "playing") return;
+      const completionSeconds = runStartSeconds !== null ? elapsedSeconds - runStartSeconds : elapsedSeconds;
+      winScreen.show(completionSeconds, killCount);
+      gameState.complete();
+    }
+
     /**
-     * 重建關卡執行期狀態：玩家、敵人、武器彈藥一律從種子重建。
-     * resetCombat＝true 時額外硬重置戰鬥狀態（HP／無敵／死亡旗標，供暫停選單「重新開始」
-     * 使用）；自然死亡重生路徑（下方 combat.update() 觸發）已由 Combat.update() 自行處理
-     * HP／死亡旗標重置，故該路徑傳 resetCombat:false 避免重複動作。
+     * 重建關卡執行期狀態：玩家、敵人、門、撿取物、武器庫存一律從種子重建。
+     * resetCombat＝true 時額外硬重置戰鬥狀態與全程統計（HP／無敵／死亡旗標／擊殺數／通關計時，
+     * 供暫停選單「重新開始」與主選單「開始」使用）；自然死亡重生路徑（下方 combat.update()
+     * 觸發）已由 Combat.update() 自行處理 HP／死亡旗標重置，且擊殺數與計時「全程累計」不應
+     * 因死亡而歸零（本次派工規格），故該路徑傳 resetCombat:false。
      */
     function resetLevelState(opts: { resetCombat: boolean; playSound: boolean }): void {
-      player.position = { ...spawnPosition };
+      player.position = { ...level.playerSpawn };
       player.yaw = 0;
       player.pitch = 0;
       player.velocityY = 0;
       player.grounded = false;
-      enemies = room.enemySpawns.map((pos, i) => new Crawler(i, pos));
-      weapon.reset();
-      if (opts.resetCombat) combat.reset();
+      nextEnemyId = 0;
+      enemies = spawnAreaEnemies("B", "idle");
+      ambushTriggered = false;
+      inventory.reset();
+      doorSystem.reset();
+      pickupRuntimes = level.pickups.map((def) => ({ def, collected: false }));
+      if (opts.resetCombat) {
+        combat.reset();
+        killCount = 0;
+        runStartSeconds = elapsedSeconds;
+      }
       if (opts.playSound) playRespawn();
     }
 
@@ -309,20 +534,18 @@ function boot(): void {
     window.__p96 = {
       ready: true,
       frames: 0,
-      levelHash: room.levelHash,
+      levelHash: level.levelHash,
       get gameState() {
         return gameState.state;
       },
       enemiesAlive: () => enemies.filter((e) => e.state !== "dead").length,
       playerHp: () => combat.playerHp,
-      ammo: () => weapon.ammo,
+      ammo: () => inventory.ammo(),
+      currentWeapon: () => inventory.current,
+      kills: () => killCount,
       fire: () => {
         // debug 手段：任何遊戲狀態下都直接生效，繞過真實輸入路徑的狀態閘（本次派工規格）。
-        const eye = player.getEyePosition();
-        const forward = forwardFromYawPitch(player.yaw, player.pitch);
-        const result = weapon.tryFire(eye, forward, room.colliders, enemies);
-        handleFireResult(result);
-        return result.fired;
+        return performFire();
       },
       damagePlayer: (amount: number) => applyDamageToPlayer(amount),
       aimAt: (enemyIndex: number) => {
@@ -337,15 +560,15 @@ function boot(): void {
         return true;
       },
       debug: {
-        // 驗收截圖用：凍結射擊特效與命中回饋計時器（後座／槍口閃光／tracer／火花／敵人
-        // hitFlash／combat 無敵與紅暈都不再衰減），方便從容截圖；預設關閉，不影響正常遊玩。
-        // 玩家視角／移動仍照常（simDt 只凍結「時間相關的衰減與判定」，不凍結輸入）。
+        // 驗收截圖用：凍結射擊特效與命中回饋計時器，方便從容截圖；預設關閉，不影響正常遊玩。
         setFreezeFx: (enabled: boolean) => {
           debugFreezeFx = enabled;
         },
         teleportPlayer: (pos: Vec3) => {
           player.position = { ...pos };
         },
+        getPlayerPosition: () => ({ x: player.position.x, y: player.position.y, z: player.position.z }),
+        pickupsRemaining: () => pickupRuntimes.filter((p) => !p.collected).map((p) => ({ kind: p.def.kind, pos: p.def.pos })),
         lookAt: (target: Vec3) => {
           const eye = player.getEyePosition();
           const dir = normalizeVec3(subVec3(target, eye));
@@ -360,6 +583,21 @@ function boot(): void {
         setState: (state: GameState) => gameState.setState(state),
         getSettings: () => settingsStore.get(),
         getFov: () => renderer.getFov(),
+        grantWeapon: (id: WeaponId) => grantWeaponDebug(id),
+        clearArea: (area: EnemyArea) => {
+          for (const e of enemies) {
+            if (e.area === area && e.state !== "dead") {
+              const died = e.applyDamage(999999);
+              if (died) killCount++;
+            }
+          }
+        },
+        doorState: (doorId: string) => doorSystem.get(doorId)?.status,
+        forceComplete: () => {
+          const completionSeconds = runStartSeconds !== null ? elapsedSeconds - runStartSeconds : 0;
+          winScreen.show(completionSeconds, killCount);
+          gameState.setState("complete");
+        },
       },
     };
 
@@ -368,54 +606,108 @@ function boot(): void {
       try {
         elapsedSeconds += dt;
         const mouseDelta = input.consumeMouseDelta(); // 每幀排空，避免暫停期間堆積（見下方閘門）
+        const weaponSwitchRequest = input.consumeWeaponSwitch();
 
-        // 狀態閘：非 playing（menu／paused）時完全跳過模擬（玩家移動、武器、敵人、戰鬥、特效），
-        // 只保留渲染（見上方檔頭註解與 game/state.ts）。debug hooks（fire()／damagePlayer() 等）
-        // 定義在此閘門之外（見上方 window.__p96），任何狀態都能直接生效。
+        // 狀態閘：非 playing（menu／paused／complete）時完全跳過模擬（玩家移動、武器、敵人、
+        // 戰鬥、特效、門、撿取），只保留渲染（世界維持在最後一個模擬幀）。debug hooks 定義在
+        // 此閘門之外（見上方 window.__p96），任何狀態都能直接生效。
         if (gameState.state === "playing") {
-          player.update(dt, input.state, mouseDelta, room.colliders);
+          player.update(dt, input.state, mouseDelta, activeColliders());
 
           const simDt = debugFreezeFx ? 0 : dt;
 
-          weapon.update(simDt);
-          if (input.firing && weapon.canFire) {
-            const eye = player.getEyePosition();
-            const forward = forwardFromYawPitch(player.yaw, player.pitch);
-            const result = weapon.tryFire(eye, forward, room.colliders, enemies);
-            handleFireResult(result);
+          inventory.update(simDt);
+
+          if (weaponSwitchRequest === 1 && inventory.switchTo("pistol")) {
+            weaponSwitchFx.trigger();
+            playSwitch();
+          } else if (weaponSwitchRequest === 2 && inventory.switchTo("shotgun")) {
+            weaponSwitchFx.trigger();
+            playSwitch();
           }
+
+          if (input.firing) performFire();
 
           recoil.update(simDt);
           muzzleFlash.update(simDt);
           tracer.update(simDt);
           spark.update(simDt);
+          weaponSwitchFx.update(simDt);
+          shotgunTracerElapsed += simDt;
+          shotgunSparkElapsed += simDt;
+          hud.updateToast(simDt);
 
           const playerFeet = player.position;
           const playerEyeForEnemies = player.getEyePosition();
+          const colliders = activeColliders();
           for (const enemy of enemies) {
-            const attackEvent = enemy.update(simDt, playerFeet, playerEyeForEnemies, room.colliders);
+            const attackEvent = enemy.update(simDt, playerFeet, playerEyeForEnemies, colliders);
             if (attackEvent) applyDamageToPlayer(attackEvent.damage);
           }
           enemies = enemies.filter((e) => !e.removable);
 
           const respawnTriggered = combat.update(simDt);
           if (respawnTriggered) resetLevelState({ resetCombat: false, playSound: true });
+
+          // 撿取：走近 0.8m 自動拾取。
+          for (const pr of pickupRuntimes) {
+            if (pr.collected) continue;
+            if (distanceXZ(playerFeet, pr.def.pos) <= PICKUP_RADIUS) collectPickup(pr);
+          }
+
+          // 門：條件（持有武器／區域敵人全滅）加玩家靠近距離自動觸發開啟。
+          const areaClearB = !enemies.some((e) => e.area === "B" && e.state !== "dead");
+          const areaClearC = ambushTriggered && !enemies.some((e) => e.area === "C" && e.state !== "dead");
+          const doorCtx: DoorRuntimeContext = { hasWeapon: inventory.ownsAny(), areaClearB, areaClearC };
+          doorSystem.update(simDt, doorCtx, playerFeet);
+
+          const lockedHint = doorSystem.nearestLockedHint(doorCtx, playerFeet);
+          hud.setHint(lockedHint ?? (inventory.ownsAny() ? null : "尚未持有武器，前往台座拾取脈衝手槍"));
+
+          // 終點觸發區：走入即通關（僅在 playing 時檢查，避免 complete 後重複觸發）。
+          if (pointInAabb({ x: playerFeet.x, y: playerFeet.y + 0.9, z: playerFeet.z }, level.endTrigger)) {
+            triggerLevelComplete();
+          }
         }
 
         const viewMatrix = player.getViewMatrix();
         const playerEye = player.getEyePosition();
 
-        // 世界：地板／牆面／天花板 → 敵人 → 世界空間 FX（tracer／火花，依實際 view/projection）
+        // 世界：地板／牆面／天花板 → 敵人 → 門與撿取物 props → 世界空間 FX → viewmodel
         renderer.render(viewMatrix, playerEye, elapsedSeconds);
-        // 面向：model matrix 加 yaw 旋轉，身體朝移動方向（e.yaw 只在 chase／retreat 實際
-        // 移動時更新，見 game/enemy.ts Crawler.moveAndFace），解掉先前 translation-only 的
-        // known limitation（PLAN §3.4 v4）。
         const enemyInstances: EnemyInstance[] = enemies.map((e) => ({
           model: translationRotationYMat4(e.position, e.yaw),
           dissolve: e.dissolveProgress,
           hitFlash: e.hitFlashIntensity,
         }));
         renderer.renderEnemies(viewMatrix, enemyInstances);
+
+        // 門與撿取物：共用頂點色 prop pipeline（見 gfx/renderer.ts renderProps）。
+        const propInstances: { key: string; model: Mat4 }[] = [];
+        for (const doorRuntime of doorSystem.list()) {
+          // 門底 y 恆為 0（DoorDef.pos 為門底中心座標），開啟時沿 +Y 滑動自身高度，完全讓出開口。
+          const slideOffset = doorRuntime.progress * DOOR_OPEN_SLIDE_DISTANCE;
+          const doorWorldPos: Vec3 = { x: doorRuntime.def.pos.x, y: slideOffset, z: doorRuntime.def.pos.z };
+          propInstances.push({
+            key: "door",
+            model: multiply(translationMat4(doorWorldPos), rotationYMat4(doorRuntime.def.yaw)),
+          });
+        }
+        for (const pr of pickupRuntimes) {
+          if (pr.collected) continue;
+          const bob = Math.sin(elapsedSeconds * PICKUP_BOB_SPEED + pr.def.pos.x) * PICKUP_BOB_AMPLITUDE;
+          const yaw = elapsedSeconds * PICKUP_ROTATE_SPEED;
+          if (pr.def.kind === "weapon-pistol" || pr.def.kind === "weapon-shotgun") {
+            const key = pr.def.kind === "weapon-pistol" ? "pickup-pistol" : "pickup-shotgun";
+            const pos: Vec3 = { x: pr.def.pos.x, y: WEAPON_PICKUP_HEIGHT + bob, z: pr.def.pos.z };
+            propInstances.push({ key, model: trsMat4(pos, yaw, WEAPON_PICKUP_SCALE) });
+          } else {
+            const key = pr.def.kind === "medkit" ? "pickup-medkit" : "pickup-ammo";
+            const pos: Vec3 = { x: pr.def.pos.x, y: PROP_PICKUP_HEIGHT + bob, z: pr.def.pos.z };
+            propInstances.push({ key, model: trsMat4(pos, yaw, 1) });
+          }
+        }
+        renderer.renderProps(viewMatrix, propInstances);
 
         const tracerData = tracer.current;
         if (tracerData) {
@@ -431,34 +723,43 @@ function boot(): void {
             "POINTS",
           );
         }
+        if (shotgunTracerElapsed < SHOTGUN_TRACER_LIFETIME && shotgunTracerData.length > 0) {
+          renderer.renderFx(viewMatrix, identity(), buildMultiTracerVertices(shotgunTracerData), "LINES");
+        }
+        if (shotgunSparkElapsed < SHOTGUN_SPARK_LIFETIME && shotgunSparkData.length > 0) {
+          const alpha = 1 - shotgunSparkElapsed / SHOTGUN_SPARK_LIFETIME;
+          renderer.renderFx(viewMatrix, identity(), buildMultiSparkVertices(shotgunSparkData, alpha), "POINTS");
+        }
 
-        // viewmodel（清深度蓋在世界之上，錨定畫面右下角）＋槍口閃光（viewmodel 空間 FX）
+        // viewmodel（清深度蓋在世界之上，錨定畫面右下角）＋槍口閃光；無裝備武器時不繪製
+        // （撿取前赤手空拳，本次派工規格），特效仍照常凍結／更新以維持狀態一致。
         const recoilAmount = recoil.amount;
+        const switchDip = weaponSwitchFx.dipAmount;
         const viewmodelOffset: Vec3 = {
           x: VIEWMODEL_BASE_OFFSET.x,
-          y: VIEWMODEL_BASE_OFFSET.y + RECOIL_KICK_Y * recoilAmount,
+          y: VIEWMODEL_BASE_OFFSET.y + RECOIL_KICK_Y * recoilAmount - WEAPON_SWITCH_DIP_Y * switchDip,
           z: VIEWMODEL_BASE_OFFSET.z + RECOIL_KICK_Z * recoilAmount,
         };
-        renderer.renderViewmodel(translationMat4(viewmodelOffset));
+        const currentWeapon = inventory.current;
+        if (currentWeapon) {
+          renderer.renderViewmodel(translationMat4(viewmodelOffset), currentWeapon);
 
-        if (muzzleFlash.active) {
-          const muzzleViewPos: Vec3 = {
-            x: viewmodelOffset.x + pistolMesh.muzzleLocal.x,
-            y: viewmodelOffset.y + pistolMesh.muzzleLocal.y,
-            z: viewmodelOffset.z + pistolMesh.muzzleLocal.z - 0.02,
-          };
-          renderer.renderFx(
-            identity(),
-            identity(),
-            buildQuadVertices(muzzleViewPos, MUZZLE_FLASH_HALF_SIZE, MUZZLE_FLASH_COLOR),
-            "TRIANGLES",
-          );
+          if (muzzleFlash.active) {
+            const muzzleLocal = currentWeapon === "shotgun" ? shotgunMesh.muzzleLocal : pistolMesh.muzzleLocal;
+            const muzzleViewPos: Vec3 = {
+              x: viewmodelOffset.x + muzzleLocal.x,
+              y: viewmodelOffset.y + muzzleLocal.y,
+              z: viewmodelOffset.z + muzzleLocal.z - 0.02,
+            };
+            renderer.renderFx(identity(), identity(), buildQuadVertices(muzzleViewPos, MUZZLE_FLASH_HALF_SIZE, MUZZLE_FLASH_COLOR), "TRIANGLES");
+          }
         }
 
         hud.updateHp(combat.playerHp, PLAYER_MAX_HP);
-        hud.updateAmmo(weapon.ammo, PULSE_PISTOL_MAGAZINE);
+        hud.updateWeaponName(currentWeapon);
+        hud.updateAmmo(inventory.ammo(), currentWeapon === "pistol" ? PULSE_PISTOL_MAGAZINE : currentWeapon === "shotgun" ? SCATTER_MAGAZINE : 0);
         hud.setHurtFlash(combat.hurtFlashIntensity);
-        overlay.setCrosshairHit(weapon.hitMarkerActive);
+        overlay.setCrosshairHit(inventory.pistol.hitMarkerActive || inventory.shotgun.hitMarkerActive);
         if (combat.isDead) {
           hud.showDeathScreen(combat.respawnSecondsRemaining);
         } else {

@@ -5,9 +5,11 @@
 
 import { createGL2Context, createProgram, createVAO, createTexture2D, type AttribLayout } from "./gl.ts";
 import { perspective, identity, type Mat4, type Vec3 } from "../core/math.ts";
-import { VERTEX_STRIDE } from "../procgen/level/room.ts";
+import { VERTEX_STRIDE } from "../procgen/level/level.ts";
 import { CRAWLER_VERTEX_STRIDE, WARNING_COLOR } from "../procgen/mesh/crawler.ts";
 import { PISTOL_VERTEX_STRIDE } from "../procgen/mesh/pistol.ts";
+import { SHOTGUN_VERTEX_STRIDE } from "../procgen/mesh/shotgun.ts";
+import { DOOR_VERTEX_STRIDE } from "../procgen/mesh/door.ts";
 
 const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec3 aPosition;
@@ -248,6 +250,13 @@ export class Renderer {
   private enemyIndexCount = 0;
   private viewmodelVao: WebGLVertexArrayObject | null = null;
   private viewmodelIndexCount = 0;
+  // M2：散射槍 viewmodel 另一份幾何（同 program／頂點格式，依目前裝備武器擇一繪製，見 renderViewmodel）。
+  private shotgunViewmodelVao: WebGLVertexArrayObject | null = null;
+  private shotgunViewmodelIndexCount = 0;
+
+  // M2：通用「頂點色 prop」實例系統，供門板／撿取物浮動圖示等共用（同 enemyProgram／頂點格式，
+  // 依 key 查表取用對應 VAO，逐實例只換 uModel）。避免每種 prop 各開一條新 shader pipeline。
+  private readonly propVaos = new Map<string, { vao: WebGLVertexArrayObject; indexCount: number }>();
 
   // 射擊視覺回饋（槍口閃光／tracer／火花）共用的極簡無光照 pipeline，動態頂點緩衝。
   private readonly fxProgram: WebGLProgram;
@@ -372,6 +381,29 @@ export class Renderer {
     );
     this.viewmodelVao = vao;
     this.viewmodelIndexCount = indexCount;
+  }
+
+  /** 上傳散射槍 viewmodel 幾何（M2 新增；武器切換時 renderViewmodel 依 weaponId 擇一繪製）。 */
+  uploadShotgunViewmodelGeometry(vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(
+      this.gl,
+      this.enemyProgram,
+      vertices,
+      indices,
+      SHOTGUN_VERTEX_STRIDE,
+      ENEMY_LAYOUT,
+    );
+    this.shotgunViewmodelVao = vao;
+    this.shotgunViewmodelIndexCount = indexCount;
+  }
+
+  /**
+   * 上傳一份 prop 幾何並登記 key（M2 新增：門板、撿取物浮動圖示等共用頂點色 program）。
+   * 同一 key 重複上傳會覆蓋（呼叫端負責不重複上傳同一 key）。
+   */
+  uploadPropGeometry(key: string, vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(this.gl, this.enemyProgram, vertices, indices, DOOR_VERTEX_STRIDE, ENEMY_LAYOUT);
+    this.propVaos.set(key, { vao, indexCount });
   }
 
   resize(): void {
@@ -500,14 +532,17 @@ export class Renderer {
    * 繪製第一人稱武器 viewmodel：繪製前清空深度緩衝，讓 viewmodel 蓋在整個世界（含敵人）之上；
    * view 固定為單位矩陣（viewmodel 直接以「相機空間」座標定義，不受玩家實際視角影響，
    * 只由 model 矩陣的 recoil 位移小幅偏移），錨定畫面固定位置。
+   * weapon（M2 新增，預設 "pistol"）：依目前裝備武器擇一繪製對應幾何。
    */
-  renderViewmodel(model: Mat4): void {
-    if (!this.viewmodelVao) return;
+  renderViewmodel(model: Mat4, weapon: "pistol" | "shotgun" = "pistol"): void {
+    const vao = weapon === "shotgun" ? this.shotgunViewmodelVao : this.viewmodelVao;
+    const indexCount = weapon === "shotgun" ? this.shotgunViewmodelIndexCount : this.viewmodelIndexCount;
+    if (!vao) return;
     const gl = this.gl;
 
     gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.useProgram(this.enemyProgram);
-    gl.bindVertexArray(this.viewmodelVao);
+    gl.bindVertexArray(vao);
 
     const identityView = identity();
     gl.uniformMatrix4fv(this.enemyUniformLocations.uView, false, identityView);
@@ -537,7 +572,37 @@ export class Renderer {
     gl.uniform1f(this.enemyUniformLocations.uHitFlash, 0);
     gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
 
-    gl.drawElements(gl.TRIANGLES, this.viewmodelIndexCount, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_INT, 0);
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * 繪製一批頂點色 prop 實例（M2 新增：門板、撿取物浮動圖示、武器台座頂飾等），共用
+   * enemyProgram／頂點色 pipeline，依 instance.key 查表取用對應 VAO，逐實例只換 uModel。
+   * 不清空畫面／深度（接續在世界＋敵人之後、viewmodel 之前繪製）。
+   */
+  renderProps(viewMatrix: Mat4, instances: { key: string; model: Mat4 }[]): void {
+    if (instances.length === 0) return;
+    const gl = this.gl;
+
+    gl.useProgram(this.enemyProgram);
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uView, false, viewMatrix);
+    gl.uniformMatrix4fv(this.enemyUniformLocations.uProjection, false, this.projection);
+    gl.uniform3f(this.enemyUniformLocations.uLightDir, this.config.lightDir.x, this.config.lightDir.y, this.config.lightDir.z);
+    gl.uniform1f(this.enemyUniformLocations.uAmbient, this.config.ambient);
+    gl.uniform3f(this.enemyUniformLocations.uLightColor, this.config.lightColor.x, this.config.lightColor.y, this.config.lightColor.z);
+    gl.uniform3f(this.enemyUniformLocations.uFogColor, this.config.fogColor.x, this.config.fogColor.y, this.config.fogColor.z);
+    gl.uniform1f(this.enemyUniformLocations.uDissolve, 0);
+    gl.uniform1f(this.enemyUniformLocations.uHitFlash, 0);
+    gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
+
+    for (const instance of instances) {
+      const entry = this.propVaos.get(instance.key);
+      if (!entry) continue;
+      gl.bindVertexArray(entry.vao);
+      gl.uniformMatrix4fv(this.enemyUniformLocations.uModel, false, instance.model);
+      gl.drawElements(gl.TRIANGLES, entry.indexCount, gl.UNSIGNED_INT, 0);
+    }
     gl.bindVertexArray(null);
   }
 

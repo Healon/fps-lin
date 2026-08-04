@@ -10,7 +10,7 @@
 // 補上 hitPoint／hitKind（命中點與命中種類），供 tracer／火花特效取用實際世界座標。
 
 import type { Vec3 } from "../core/math.ts";
-import type { Aabb } from "../procgen/level/room.ts";
+import type { Aabb } from "../procgen/level/level.ts";
 import { rayAabbIntersect, expandAabb } from "./collision.ts";
 import { Crawler } from "./enemy.ts";
 import { playShoot, playHit, playEnemyDie } from "../audio/synth.ts";
@@ -33,6 +33,51 @@ export interface FireResult {
   /** 命中點世界座標；fired=false 時為 null，未命中任何東西則為射線終點（MAX_RANGE 處）。 */
   hitPoint: Vec3 | null;
   hitKind: HitKind;
+  /** 本次命中是否為致命一擊（M2 新增，供 main.ts 累計擊殺數；不可由事後檢查 hitEnemy.state
+   *  推得——多發／多珠情境下敵人可能在本次以前就已死亡，見 shotgun.ts PelletHit 同慣例）。 */
+  died: boolean;
+}
+
+export interface RaycastHit {
+  hitEnemy: Crawler | null;
+  hitPoint: Vec3;
+  hitKind: HitKind;
+}
+
+/**
+ * 共用的場景 raycast：關卡幾何與敵人（皆以「先命中者算」比對交點 t）取最近者。
+ * 敵人 AABB 外擴 AIM_ASSIST_MARGIN 做瞄準寬容（見檔頭註解），供 PulsePistol／ScatterShotgun
+ * 共用，避免同一段命中判定邏輯在兩把武器各自重複一份（M2 新增散射槍時抽出）。
+ */
+export function raycastScene(origin: Vec3, direction: Vec3, levelColliders: Aabb[], enemies: Crawler[]): RaycastHit {
+  let nearestT = MAX_RANGE;
+  let nearestEnemy: Crawler | null = null;
+
+  for (const collider of levelColliders) {
+    const t = rayAabbIntersect(origin, direction, collider);
+    if (t !== null && t < nearestT) {
+      nearestT = t;
+      nearestEnemy = null;
+    }
+  }
+
+  for (const enemy of enemies) {
+    if (enemy.state === "dead") continue;
+    const expanded = expandAabb(enemy.getAabb(), AIM_ASSIST_MARGIN);
+    const t = rayAabbIntersect(origin, direction, expanded);
+    if (t !== null && t < nearestT) {
+      nearestT = t;
+      nearestEnemy = enemy;
+    }
+  }
+
+  const hitKind: HitKind = nearestEnemy ? "enemy" : nearestT < MAX_RANGE ? "wall" : "none";
+  const hitPoint: Vec3 = {
+    x: origin.x + direction.x * nearestT,
+    y: origin.y + direction.y * nearestT,
+    z: origin.z + direction.z * nearestT,
+  };
+  return { hitEnemy: nearestEnemy, hitPoint, hitKind };
 }
 
 export class PulsePistol {
@@ -66,45 +111,17 @@ export class PulsePistol {
    * direction 需為單位向量（camera forward）。
    */
   tryFire(origin: Vec3, direction: Vec3, levelColliders: Aabb[], enemies: Crawler[]): FireResult {
-    if (!this.canFire) return { fired: false, hitEnemy: null, hitPoint: null, hitKind: "none" };
+    if (!this.canFire) return { fired: false, hitEnemy: null, hitPoint: null, hitKind: "none", died: false };
 
     this.cooldownRemaining = PULSE_PISTOL_COOLDOWN;
     this.ammo -= 1;
     playShoot();
 
-    let nearestT = MAX_RANGE;
-    let nearestEnemy: Crawler | null = null;
+    const { hitEnemy, hitPoint, hitKind } = raycastScene(origin, direction, levelColliders, enemies);
 
-    // 先找關卡幾何的最近交點（牆面／障礙物可能擋住敵人）
-    for (const collider of levelColliders) {
-      const t = rayAabbIntersect(origin, direction, collider);
-      if (t !== null && t < nearestT) {
-        nearestT = t;
-        nearestEnemy = null;
-      }
-    }
-
-    // 再看是否有敵人比目前最近的牆面交點更近（先命中者算）；敵人 AABB 外擴 AIM_ASSIST_MARGIN
-    // 做瞄準寬容，僅影響此處的命中判定，不影響敵人實際碰撞／移動範圍。
-    for (const enemy of enemies) {
-      if (enemy.state === "dead") continue;
-      const expanded = expandAabb(enemy.getAabb(), AIM_ASSIST_MARGIN);
-      const t = rayAabbIntersect(origin, direction, expanded);
-      if (t !== null && t < nearestT) {
-        nearestT = t;
-        nearestEnemy = enemy;
-      }
-    }
-
-    const hitKind: HitKind = nearestEnemy ? "enemy" : nearestT < MAX_RANGE ? "wall" : "none";
-    const hitPoint: Vec3 = {
-      x: origin.x + direction.x * nearestT,
-      y: origin.y + direction.y * nearestT,
-      z: origin.z + direction.z * nearestT,
-    };
-
-    if (nearestEnemy) {
-      const died = nearestEnemy.applyDamage(PULSE_PISTOL_DAMAGE);
+    let died = false;
+    if (hitEnemy) {
+      died = hitEnemy.applyDamage(PULSE_PISTOL_DAMAGE);
       this.hitMarkerRemaining = HIT_MARKER_DURATION;
       if (died) {
         playEnemyDie();
@@ -113,6 +130,8 @@ export class PulsePistol {
       }
     }
 
-    return { fired: true, hitEnemy: nearestEnemy, hitPoint, hitKind };
+    return { fired: true, hitEnemy, hitPoint, hitKind, died };
   }
 }
+
+export type WeaponId = "pistol" | "shotgun";

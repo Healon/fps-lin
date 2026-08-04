@@ -1,7 +1,7 @@
 // node:test 純邏輯單元測試：射擊視覺效果的生命週期（觸發後 t=0 有效、超過存活時間即失效）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect } from "../../src/game/effects.ts";
+import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect, WeaponSwitchEffect } from "../../src/game/effects.ts";
 
 test("Recoil：未觸發時 amount 為 0；trigger 後隨即進入上升段，超過總時長後衰減回 0", () => {
   const r = new Recoil();
@@ -79,6 +79,23 @@ test("SparkEffect：trigger 後 current 回傳資料且 kind 正確，超過存�
   assert.equal(spark.active, false);
   assert.equal(spark.current, null);
   assert.equal(spark.progress, 1);
+});
+
+test("WeaponSwitchEffect：trigger 後 dipAmount 兩端為 0、中點達峰值，超過時長後 active=false", () => {
+  const sw = new WeaponSwitchEffect();
+  assert.equal(sw.active, false);
+  assert.equal(sw.dipAmount, 0);
+
+  sw.trigger();
+  assert.equal(sw.active, true);
+  assert.equal(sw.dipAmount, 0, "t=0 應為 0（原位起跳）");
+
+  sw.update(0.125); // 約總時長一半（0.25s 的 50%）
+  assert.ok(sw.dipAmount > 0.9, `中點應接近峰值 1，實際 ${sw.dipAmount}`);
+
+  sw.update(0.2); // 累積 0.325s，超過 0.25s
+  assert.equal(sw.active, false);
+  assert.equal(sw.dipAmount, 0);
 });
 
 test("SparkEffect：可重複 trigger，新資料覆蓋舊資料並重置存活時間", () => {

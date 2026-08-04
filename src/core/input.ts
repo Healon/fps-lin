@@ -41,10 +41,23 @@ export class InputManager {
 
   private mouseDX = 0;
   private mouseDY = 0;
+  /** 數字鍵 1／2（切換武器）為邊緣觸發（keydown 當下才記一次，非按住持續觸發），
+   *  M2 新增；每幀由 consumeWeaponSwitch() 讀取並清空，同 consumeMouseDelta() 慣例。 */
+  private pendingWeaponSwitch: 1 | 2 | null = null;
   private readonly canvas: HTMLCanvasElement;
   private readonly onPointerLockChange: PointerLockChangeCallback | undefined;
 
   private readonly handleKeyDown = (e: KeyboardEvent): void => {
+    if (e.code === "Digit1") {
+      this.pendingWeaponSwitch = 1;
+      e.preventDefault();
+      return;
+    }
+    if (e.code === "Digit2") {
+      this.pendingWeaponSwitch = 2;
+      e.preventDefault();
+      return;
+    }
     if (this.setKey(e.code, true)) e.preventDefault();
   };
 
@@ -160,6 +173,13 @@ export class InputManager {
     this.mouseDX = 0;
     this.mouseDY = 0;
     return { dx, dy };
+  }
+
+  /** 取出並清空數字鍵 1／2 的待處理武器切換請求（每幀呼叫一次，邊緣觸發，M2 新增）。 */
+  consumeWeaponSwitch(): 1 | 2 | null {
+    const req = this.pendingWeaponSwitch;
+    this.pendingWeaponSwitch = null;
+    return req;
   }
 
   dispose(): void {

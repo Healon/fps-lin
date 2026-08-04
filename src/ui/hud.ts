@@ -15,13 +15,22 @@ const COLOR_ERROR = "#FF5A26";
 const HP_LOW_THRESHOLD = 0.3;
 const VIGNETTE_INTENSITY = 0.35;
 
+const WEAPON_LABEL: Readonly<Record<string, string>> = {
+  pistol: "脈衝手槍",
+  shotgun: "散射槍",
+};
+
 export class Hud {
   private readonly hpValueEl: HTMLDivElement;
   private readonly ammoValueEl: HTMLDivElement;
+  private readonly weaponNameEl: HTMLDivElement;
   private readonly hurtVignetteEl: HTMLDivElement;
   private readonly vignetteEl: HTMLDivElement;
   private readonly deathPanelEl: HTMLDivElement;
   private readonly deathMessageEl: HTMLDivElement;
+  private readonly toastEl: HTMLDivElement;
+  private readonly hintEl: HTMLDivElement;
+  private toastRemaining = 0;
 
   constructor(container: HTMLElement = document.body) {
     const hpPanel = this.buildCornerPanel("left");
@@ -34,23 +43,68 @@ export class Hud {
     hpPanel.appendChild(this.hpValueEl);
 
     const ammoPanel = this.buildCornerPanel("right");
-    const ammoLabel = document.createElement("div");
-    ammoLabel.textContent = "彈藥";
-    Object.assign(ammoLabel.style, {
+    this.weaponNameEl = document.createElement("div");
+    this.weaponNameEl.dataset["role"] = "weapon-name";
+    Object.assign(this.weaponNameEl.style, {
       fontSize: "11px",
       opacity: "0.7",
       letterSpacing: "0.08em",
       textAlign: "right",
     });
+    this.weaponNameEl.textContent = "赤手空拳";
     this.ammoValueEl = document.createElement("div");
+    this.ammoValueEl.dataset["role"] = "ammo-value";
     Object.assign(this.ammoValueEl.style, {
       fontSize: "28px",
       fontWeight: "700",
       color: COLOR_AMMO,
       textAlign: "right",
     });
-    ammoPanel.appendChild(ammoLabel);
+    ammoPanel.appendChild(this.weaponNameEl);
     ammoPanel.appendChild(this.ammoValueEl);
+
+    this.hintEl = document.createElement("div");
+    this.hintEl.dataset["role"] = "objective-hint";
+    Object.assign(this.hintEl.style, {
+      position: "fixed",
+      top: "18%",
+      left: "50%",
+      transform: "translateX(-50%)",
+      padding: "6px 18px",
+      background: COLOR_PANEL,
+      borderRadius: "4px",
+      color: COLOR_TEXT,
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      fontSize: "14px",
+      letterSpacing: "0.06em",
+      zIndex: "14",
+      pointerEvents: "none",
+      opacity: "0",
+      transition: "opacity 150ms ease-out",
+      textAlign: "center",
+    });
+
+    this.toastEl = document.createElement("div");
+    this.toastEl.dataset["role"] = "pickup-toast";
+    Object.assign(this.toastEl.style, {
+      position: "fixed",
+      bottom: "26%",
+      left: "50%",
+      transform: "translateX(-50%)",
+      padding: "8px 22px",
+      background: COLOR_PANEL,
+      borderRadius: "4px",
+      color: COLOR_AMMO,
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      fontSize: "16px",
+      fontWeight: "700",
+      letterSpacing: "0.06em",
+      zIndex: "14",
+      pointerEvents: "none",
+      opacity: "0",
+      transition: "opacity 200ms ease-out",
+      textAlign: "center",
+    });
 
     this.hurtVignetteEl = document.createElement("div");
     this.hurtVignetteEl.id = "p96-hurt-vignette";
@@ -108,6 +162,8 @@ export class Hud {
     container.appendChild(ammoPanel);
     container.appendChild(this.vignetteEl);
     container.appendChild(this.hurtVignetteEl);
+    container.appendChild(this.hintEl);
+    container.appendChild(this.toastEl);
     container.appendChild(this.deathPanelEl);
   }
 
@@ -134,7 +190,12 @@ export class Hud {
   }
 
   updateAmmo(current: number, max: number): void {
-    this.ammoValueEl.textContent = `${current} ／ ${max}`;
+    this.ammoValueEl.textContent = max > 0 ? `${current} ／ ${max}` : "－";
+  }
+
+  /** weaponId 為 null 表示尚未裝備任何武器（區域 A 出生時赤手空拳，撿取前不可開火）。 */
+  updateWeaponName(weaponId: "pistol" | "shotgun" | null): void {
+    this.weaponNameEl.textContent = weaponId ? WEAPON_LABEL[weaponId] : "赤手空拳";
   }
 
   /** intensity 為 0（無）至 1（剛受傷）的紅暈強度。 */
@@ -150,5 +211,29 @@ export class Hud {
 
   hideDeathScreen(): void {
     this.deathPanelEl.style.display = "none";
+  }
+
+  /** 持續顯示的引導／鎖定提示（門鎖定原因、尚未持有武器引導）。text 為 null 時隱藏。 */
+  setHint(text: string | null): void {
+    if (text) {
+      this.hintEl.textContent = text;
+      this.hintEl.style.opacity = "1";
+    } else {
+      this.hintEl.style.opacity = "0";
+    }
+  }
+
+  /** 短暫 toast（拾取回饋），duration 秒後自動淡出；呼叫端每幀呼叫 updateToast(dt) 驅動衰減。 */
+  showToast(text: string, duration = 1.6): void {
+    this.toastEl.textContent = text;
+    this.toastEl.style.opacity = "1";
+    this.toastRemaining = duration;
+  }
+
+  /** 每幀呼叫（simDt，暫停時應傳 0 或不呼叫，讓 toast 隨模擬暫停）：遞減 toast 剩餘時間。 */
+  updateToast(dt: number): void {
+    if (this.toastRemaining <= 0) return;
+    this.toastRemaining = Math.max(0, this.toastRemaining - dt);
+    if (this.toastRemaining === 0) this.toastEl.style.opacity = "0";
   }
 }

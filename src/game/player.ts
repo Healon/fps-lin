@@ -8,7 +8,7 @@
 import type { Vec3, Mat4 } from "../core/math.ts";
 import { fpsViewMatrix } from "../core/math.ts";
 import type { InputState } from "../core/input.ts";
-import type { Aabb } from "../procgen/level/room.ts";
+import type { Aabb } from "../procgen/level/level.ts";
 import { resolveAxisMove } from "./collision.ts";
 
 const MOVE_SPEED = 6.0; // m/s，相機平面投影

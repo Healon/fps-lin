@@ -49,7 +49,10 @@ test.describe("M2 遊戲狀態機與設定系統", () => {
     await page.locator("#p96-start-overlay").click();
     await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
-    // 讓敵人先真正動一陣子，確保後續的「凍結」是相對於原本會動而言，不是本來就靜止。
+    // M2 第二階段：巡行體改在區域 B（離出生點甚遠，出生點附近站著不動不會進入偵測範圍），
+    // 用 debug.teleportPlayer 把玩家直接送到區域 B 巡行體偵測範圍內，讓敵人先真正動一陣子，
+    // 確保後續的「凍結」是相對於原本會動而言，不是本來就靜止（沿用 M1 版本測試意圖）。
+    await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 9, y: 0, z: -8 }));
     await page.waitForTimeout(500);
 
     await page.evaluate(() => window.__p96!.debug.setState("paused"));

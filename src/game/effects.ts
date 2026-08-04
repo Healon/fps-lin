@@ -86,6 +86,32 @@ export class TracerEffect {
   }
 }
 
+const WEAPON_SWITCH_DURATION = 0.25; // 秒，PLAN 本次派工規格：viewmodel 快速下收上抬約 0.25 秒
+
+/** 武器切換：viewmodel 下收再上抬的一次性動畫，dipAmount 為 0（原位）至 1（谷底）的曲線，
+ *  兩端為 0、中點（t=0.5）達峰值，供 main.ts 疊加到 viewmodel 的 Y 偏移。 */
+export class WeaponSwitchEffect {
+  private elapsed = WEAPON_SWITCH_DURATION;
+
+  trigger(): void {
+    this.elapsed = 0;
+  }
+
+  update(dt: number): void {
+    this.elapsed += dt;
+  }
+
+  get active(): boolean {
+    return this.elapsed < WEAPON_SWITCH_DURATION;
+  }
+
+  get dipAmount(): number {
+    if (this.elapsed >= WEAPON_SWITCH_DURATION) return 0;
+    const t = this.elapsed / WEAPON_SWITCH_DURATION;
+    return Math.sin(t * Math.PI);
+  }
+}
+
 export type SparkKind = "enemy" | "wall";
 
 export interface SparkData {

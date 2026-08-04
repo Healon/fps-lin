@@ -1,19 +1,20 @@
-// Playwright 真瀏覽器閘門：M1 戰鬥流程。用 window.__p96 debug hooks 驅動：
-// 初始 3 隻巡行體 → aimAt 加 fire 連打至 0 → damagePlayer(100) 觸發死亡畫面 →
+// Playwright 真瀏覽器閘門：戰鬥流程（脈衝手槍擊殺區域 B 的 3 隻巡行體、玩家死亡與重生）。
+// 用 window.__p96 debug hooks 驅動：進入 playing → grantWeapon('pistol')（撿取前赤手空拳，
+// 不可開火，見 game/inventory.ts）→ aimAt 加 fire 連打至 0 → damagePlayer(100) 觸發死亡畫面 →
 // 3 秒後自動重生，敵人與彈藥從種子重建、HP 回滿。全程無 console error／pageerror。
 //
-// 2026-08-04（M2）微調：加入三態遊戲狀態機（見 src/game/state.ts）後，玩家移動／武器／敵人／
-// 戰鬥／特效的模擬一律以 gameState.state === "playing" 為閘門，menu 狀態下完全不跑（收掉
-// HANDOFF 待辦第 3 條技術債）。本測試原本從不點擊主選單、全程只靠 debug hooks 驅動，若維持
-// 原樣會停在 menu 狀態，combat.update() 的死亡重生倒數永遠不會被呼叫到，最後一段
-// waitForFunction(playerHp()===100) 會逾時。故補一行「點擊主選單進入 playing」，其餘劇本不變。
+// 2026-08-04（M2 第二階段）：取代 M0/M1 單一測試房後，出生點附近不再有敵人（巡行體改在
+// 區域 B），且玩家出生時赤手空拳（PLAN 本次派工規格：撿取前不可開火），本測試改用
+// debug.grantWeapon('pistol') 直接裝備手槍再開戰，其餘擊殺／死亡／重生劇本邏輯不變
+// （區域 B 巡行體數量沿用 3 隻，恰與 M1 版本相同，aimAt／enemiesAlive 等 debug hook 皆為
+// 泛用實作，不依賴關卡內容）。
 import { test, expect } from "@playwright/test";
 // window.__p96 型別宣告見 src/types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效）。
 
 const FIRE_COOLDOWN_MS = 1000 / 3; // PLAN §3.3：脈衝手槍射速 3 發/秒
 const WAIT_BETWEEN_SHOTS_MS = Math.ceil(FIRE_COOLDOWN_MS) + 60; // 留些餘裕避免卡在冷卻邊界
 
-test("M1 戰鬥流程：擊殺 3 隻巡行體、玩家死亡與重生，全程無 console error", async ({ page }) => {
+test("M2 戰鬥流程：擊殺區域 B 的 3 隻巡行體、玩家死亡與重生，全程無 console error", async ({ page }) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
 
@@ -27,17 +28,24 @@ test("M1 戰鬥流程：擊殺 3 隻巡行體、玩家死亡與重生，全程�
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
 
-  // 進入 playing 狀態（M2 起，戰鬥模擬與死亡重生倒數只在 playing 時更新，見上方檔頭註解）。
+  // 進入 playing 狀態。
   await page.locator("#p96-start-overlay").click();
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
-  // 初始 3 隻巡行體存活
+  // 撿取前赤手空拳：ammo() 回 0，直接 grantWeapon 裝備脈衝手槍（等效走到台座撿取）。
+  expect(await page.evaluate(() => window.__p96!.ammo())).toBe(0);
+  await page.evaluate(() => window.__p96!.debug.grantWeapon("pistol"));
+  expect(await page.evaluate(() => window.__p96!.currentWeapon())).toBe("pistol");
+
+  // 巡行體在區域 B（離出生點很遠，且中間隔著走廊牆面與門 A），raycast 命中判定需要玩家
+  // 實際站在同一空間內才有清楚視線；用 debug.teleportPlayer 跳過走位，直接站到區域 B 中央。
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 16, y: 0, z: -10 }));
+
+  // 區域 B 初始 3 隻巡行體存活
   const initialAlive = await page.evaluate(() => window.__p96!.enemiesAlive());
   expect(initialAlive).toBe(3);
 
   // 依序擊殺每隻敵人：aimAt(0) 永遠指向目前仍存活的第一隻（前一隻死後會遞補）。
-  // 敵人偵測到玩家後會朝玩家追擊移動，因此每次開火前都要重新 aimAt 校正瞄準線，
-  // 不能只在回合開頭瞄一次；2 發（12x2=24 = HP 24）理論上足以擊殺，多給幾發餘裕。
   for (let enemyRound = 0; enemyRound < 3; enemyRound++) {
     let aliveBefore = await page.evaluate(() => window.__p96!.enemiesAlive());
     for (let shot = 0; shot < 10 && aliveBefore > 3 - enemyRound - 1; shot++) {
@@ -52,6 +60,7 @@ test("M1 戰鬥流程：擊殺 3 隻巡行體、玩家死亡與重生，全程�
 
   const aliveAfterCombat = await page.evaluate(() => window.__p96!.enemiesAlive());
   expect(aliveAfterCombat).toBe(0);
+  expect(await page.evaluate(() => window.__p96!.kills())).toBeGreaterThanOrEqual(3);
 
   // 玩家死亡：死亡畫面出現，HP 歸零
   const damaged = await page.evaluate(() => window.__p96!.damagePlayer(100));

@@ -5,7 +5,10 @@
 //
 // 純邏輯，無 DOM／計時器依賴，可直接以 node:test 驗證轉移表（tests/unit/state.test.ts）。
 
-export type GameState = "menu" | "playing" | "paused";
+// M2：新增 "complete"（通關畫面）。playing → complete（走入終點門觸發區），對稱於既有
+// playing → paused 轉移，同樣經 setState() 直接切換，不設回頭路（通關後只能經 PauseMenu／
+// WinScreen 的「回主選單」按鈕重新走 restart() 流程回到 playing，見 main.ts）。
+export type GameState = "menu" | "playing" | "paused" | "complete";
 
 export type GameStateListener = (next: GameState, previous: GameState) => void;
 
@@ -52,5 +55,10 @@ export class GameStateMachine {
   /** paused → playing：暫停選單「重新開始」。呼叫端負責先從種子重建關卡狀態（見 main.ts）。 */
   restart(): void {
     this.setState("playing");
+  }
+
+  /** playing → complete：玩家走入終點門觸發區（M2 新增，見 game/doors.ts 與 main.ts）。 */
+  complete(): void {
+    this.setState("complete");
   }
 }

@@ -2,7 +2,7 @@
 // 以及 ray-AABB 交點測試（武器 hitscan 與敵人視線判定共用）。
 
 import type { Vec3 } from "../core/math.ts";
-import type { Aabb } from "../procgen/level/room.ts";
+import type { Aabb } from "../procgen/level/level.ts";
 
 export function aabbOverlap(aMin: Vec3, aMax: Vec3, bMin: Vec3, bMax: Vec3): boolean {
   return (

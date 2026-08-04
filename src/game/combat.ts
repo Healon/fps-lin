@@ -58,6 +58,17 @@ export class Combat {
     this.dead = false;
   }
 
+  /**
+   * 治療：回復 amount 點生命值，上限 PLAYER_MAX_HP，回傳實際回復量（可能因封頂而小於 amount）。
+   * 已死亡或 amount 非正時忽略並回傳 0（供 medkit 撿取使用，M2）。
+   */
+  heal(amount: number): number {
+    if (this.dead || amount <= 0) return 0;
+    const before = this.playerHp;
+    this.playerHp = Math.min(PLAYER_MAX_HP, this.playerHp + amount);
+    return this.playerHp - before;
+  }
+
   /** 每幀呼叫。回傳 true 代表本幀觸發重生，呼叫端應重建玩家位置／敵人／彈藥狀態。 */
   update(dt: number): boolean {
     if (this.invulnRemaining > 0) this.invulnRemaining = Math.max(0, this.invulnRemaining - dt);

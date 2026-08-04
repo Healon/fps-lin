@@ -13,7 +13,7 @@
 
 import type { Vec3 } from "../core/math.ts";
 import { subVec3, lengthVec3 } from "../core/math.ts";
-import type { Aabb } from "../procgen/level/room.ts";
+import type { Aabb } from "../procgen/level/level.ts";
 import { resolveAxisMove, hasClearLineOfSight } from "./collision.ts";
 
 export type EnemyState = "idle" | "detect" | "chase" | "attack" | "retreat" | "hurt" | "dead";
@@ -101,10 +101,13 @@ export interface CrawlerAttackEvent {
 
 export class Crawler {
   readonly id: number;
+  /** 所屬區域標記（M2 新增，供 DoorSystem 的 area-clear 條件判斷；未指定則為 undefined，
+   *  M1 既有呼叫點不受影響）。 */
+  readonly area?: string;
   /** 腳底位置。 */
   position: Vec3;
   hp = CRAWLER_MAX_HP;
-  state: EnemyState = "idle";
+  state: EnemyState;
   private stateTimer = 0;
   private attackCooldown = 0;
   private hitFlashTimer = 0;
@@ -113,9 +116,15 @@ export class Crawler {
   /** 面向 yaw（弧度），只在實際移動（chase／retreat）時更新，供 renderer 端旋轉模型。 */
   private facingYaw = 0;
 
-  constructor(id: number, spawnPosition: Vec3) {
+  /**
+   * initialState（M2 新增，預設 "idle"）：區域 C 伏擊組出生即直接進 chase，跳過 idle 偵測
+   * （direct aggro，見本次派工規格）。area（M2 新增）：供 DoorSystem 的 area-clear 條件分組。
+   */
+  constructor(id: number, spawnPosition: Vec3, initialState: EnemyState = "idle", area?: string) {
     this.id = id;
     this.position = { ...spawnPosition };
+    this.state = initialState;
+    this.area = area;
   }
 
   getCenter(): Vec3 {

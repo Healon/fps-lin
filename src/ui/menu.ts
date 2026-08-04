@@ -279,3 +279,72 @@ export class SettingsPanel {
     this.root.style.display = "none";
   }
 }
+
+/**
+ * 通關畫面（M2 新增）：playing → complete（見 game/state.ts）進入終點觸發區時顯示，
+ * 呈現通關時間與擊殺數，唯一動作是「回主選單」（走 state machine 的 restart 流程，
+ * 由 main.ts 負責重建關卡狀態，回到 menu 重新開始完整流程，本次派工規格）。
+ */
+export class WinScreen {
+  private readonly root: HTMLDivElement;
+  private readonly statsEl: HTMLDivElement;
+  private onReturnToMenuCb: (() => void) | null = null;
+
+  constructor(container: HTMLElement = document.body) {
+    this.root = document.createElement("div");
+    this.root.id = "p96-win-overlay";
+    Object.assign(this.root.style, {
+      position: "fixed",
+      inset: "0",
+      display: "none",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: "16px",
+      background: COLOR_BG_OVERLAY,
+      color: COLOR_TEXT,
+      zIndex: "28",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      textAlign: "center",
+    });
+
+    const title = document.createElement("div");
+    title.textContent = "垂直切片完成";
+    Object.assign(title.style, {
+      fontSize: "clamp(26px, 5vw, 42px)",
+      fontWeight: "700",
+      color: COLOR_ACCENT,
+      textShadow: `0 0 24px ${COLOR_ACCENT}`,
+    });
+
+    this.statsEl = document.createElement("div");
+    this.statsEl.dataset["role"] = "win-stats";
+    Object.assign(this.statsEl.style, { fontSize: "16px", color: COLOR_TEXT, opacity: "0.85", lineHeight: "1.8" });
+
+    const menuBtn = buildMenuButton("回主選單");
+    menuBtn.dataset["role"] = "win-return-menu";
+    menuBtn.addEventListener("click", () => this.onReturnToMenuCb?.());
+
+    this.root.appendChild(title);
+    this.root.appendChild(this.statsEl);
+    this.root.appendChild(menuBtn);
+    container.appendChild(this.root);
+  }
+
+  onReturnToMenu(cb: () => void): void {
+    this.onReturnToMenuCb = cb;
+  }
+
+  /** 顯示通關統計：completionSeconds 為離開主選單起算的耗時，kills 為全程累計擊殺數。 */
+  show(completionSeconds: number, kills: number): void {
+    const minutes = Math.floor(completionSeconds / 60);
+    const seconds = Math.floor(completionSeconds % 60);
+    const timeText = `${minutes}分${seconds.toString().padStart(2, "0")}秒`;
+    this.statsEl.textContent = `通關時間：${timeText}　擊殺數：${kills}`;
+    this.root.style.display = "flex";
+  }
+
+  hide(): void {
+    this.root.style.display = "none";
+  }
+}

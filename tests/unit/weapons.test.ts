@@ -11,7 +11,7 @@ import {
 } from "../../src/game/weapons.ts";
 import { Crawler, CRAWLER_MAX_HP, CRAWLER_HALF } from "../../src/game/enemy.ts";
 import { rayAabbIntersect, expandAabb } from "../../src/game/collision.ts";
-import type { Aabb } from "../../src/procgen/level/room.ts";
+import type { Aabb } from "../../src/procgen/level/level.ts";
 
 test("常數符合 PLAN §3.3 裁決值：傷害 12、射速 3 發/秒、彈藥上限 120", () => {
   assert.equal(PULSE_PISTOL_DAMAGE, 12);

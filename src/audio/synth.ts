@@ -261,3 +261,70 @@ export function playRespawn(): void {
     });
   });
 }
+
+// ---- M2 新增：散射槍、武器切換、撿取、門機械聲 ----
+
+/** 散射槍槍聲：比脈衝手槍更寬的 noise burst（多珠齊發的量感）加低頻方波悶響，短促但更粗獷。 */
+export function playShotgunFire(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.09,
+      filterType: "bandpass",
+      freqStart: 1400,
+      freqEnd: 500,
+      env: { attack: 0.001, decay: 0.08, peak: 0.7 },
+    });
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 220,
+      freqEnd: 70,
+      duration: 0.12,
+      env: { attack: 0.001, decay: 0.1, peak: 0.45 },
+    });
+  });
+}
+
+/** 武器切換：短促機械 click（無音高變化的高頻 noise burst）。 */
+export function playSwitch(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.04,
+      filterType: "highpass",
+      freqStart: 2500,
+      env: { attack: 0.0005, decay: 0.035, peak: 0.35 },
+    });
+  });
+}
+
+/** 撿取：清脆上滑短音，帶「獲得」的正回饋感。 */
+export function playPickup(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "triangle",
+      freqStart: 500,
+      freqEnd: 1100,
+      duration: 0.12,
+      env: { attack: 0.005, decay: 0.11, peak: 0.4 },
+    });
+  });
+}
+
+/** 門機械滑動聲：低頻 noise 加緩慢下滑合成器音，機械感。 */
+export function playDoorMove(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.5,
+      filterType: "lowpass",
+      freqStart: 700,
+      freqEnd: 250,
+      env: { attack: 0.02, decay: 0.45, peak: 0.35 },
+    });
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 140,
+      freqEnd: 90,
+      duration: 0.4,
+      env: { attack: 0.02, decay: 0.35, peak: 0.2 },
+    });
+  });
+}

@@ -1,5 +1,7 @@
 // Playwright 真瀏覽器閘門：載入無 console error／pageerror、frames 前進、levelHash 與 golden
 // 一致、點擊後 overlay 隱藏。對應 PLAN §8.1「真瀏覽器閘門」與 M0 AC。
+// 2026-08-04（M2 第二階段）：levelHash 現為 procgen/level/level.ts 的 generateLevel()（區域 A
+// 至 C 垂直切片）產出，golden 檔已同步更新；本測試邏輯本身不依賴關卡內容細節，不需其他修改。
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

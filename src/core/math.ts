@@ -174,3 +174,17 @@ export function rotationYMat4(yaw: number): Mat4 {
 export function translationRotationYMat4(t: Vec3, yaw: number): Mat4 {
   return multiply(translationMat4(t), rotationYMat4(yaw));
 }
+
+/** 均勻縮放矩陣（供 M2 撿取物視覺重用 viewmodel 網格並整體放大時使用）。 */
+export function scaleUniformMat4(s: number): Mat4 {
+  const out = identity();
+  out[0] = s;
+  out[5] = s;
+  out[10] = s;
+  return out;
+}
+
+/** 位移＋繞 Y 軸旋轉＋均勻縮放的組合矩陣（先縮放、再旋轉、後平移，標準 TRS 順序）。 */
+export function trsMat4(t: Vec3, yaw: number, scale: number): Mat4 {
+  return multiply(translationMat4(t), multiply(rotationYMat4(yaw), scaleUniformMat4(scale)));
+}
