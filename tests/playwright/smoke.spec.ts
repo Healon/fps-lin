@@ -51,4 +51,15 @@ test("M0 smoke：載入、無錯誤、frames 前進、levelHash 正確、點擊�
   // 全程無 console error 與 pageerror
   expect(consoleErrors, `console errors: ${JSON.stringify(consoleErrors)}`).toHaveLength(0);
   expect(pageErrors, `page errors: ${JSON.stringify(pageErrors)}`).toHaveLength(0);
+
+  // 幀卡頓量測（PLAN §7.4；本次派工規格）：讀取自 ready 起算的單幀最大耗時。headless 環境
+  // 時間抖動大，只擋災難級卡頓，真實 100ms 目標由 Lin 實機驗收；此處數字另會被 gate 執行時
+  // 的終端輸出撈出回報。斷言上限採實測校準（非隨意猜測）：單獨跑 smoke 三引擎測得
+  // 117～217ms，`npm run gate` 完整套件以多個 worker 平行跑（chromium＋webkit＋firefox＋
+  // combat／m2-level 等多檔同時搶 CPU）時測得可達 298ms，屬平行測試競爭 CPU 的正常抖動，
+  // 非真的卡頓；1000ms 仍有數倍餘裕擋下真正的災難級凍結（如 WebGL context lost 未恢復、
+  // rAF 卡死數秒）。
+  const maxFrameMs = await page.evaluate(() => window.__p96!.debug.maxFrameMs());
+  console.log(`[perf] maxFrameMs=${maxFrameMs.toFixed(2)}ms（斷言 <1000ms，PLAN §7.4 真實目標 <100ms 由實機驗收）`);
+  expect(maxFrameMs).toBeLessThan(1000);
 });

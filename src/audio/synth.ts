@@ -53,6 +53,26 @@ export function setMasterVolume(volume0to100: number): void {
   if (masterGainNode) masterGainNode.gain.value = masterVolumeRatio;
 }
 
+/**
+ * 供 audio/music.ts 共用同一顆 AudioContext 與 master gain（M2 第三階段新增）：
+ * 音樂與 SFX 必須經過同一個 masterGainNode 才會一起受設定系統的主音量控制，
+ * 不應各自建立獨立 AudioContext（那會讓兩者的 currentTime 基準不同步，且無法共同靜音）。
+ * 回傳 null 代表本機瀏覽器不支援或建立失敗（呼叫端一律靜音續玩，不拋例外）。
+ */
+export function getSharedAudioContext(): AudioContext | null {
+  return ensureContext();
+}
+
+/** 供 music.ts 把音樂匯流排接到與 SFX 相同的 master gain（尚未建立 context 時回傳 null）。 */
+export function getSharedMasterGain(): GainNode | null {
+  return masterGainNode;
+}
+
+/** 供 music.ts 重用同一份白噪音 buffer（金屬敲擊／打擊層等 noise-based 音色），避免重複配置。 */
+export function getSharedNoiseBuffer(ctx: AudioContext): AudioBuffer {
+  return getNoiseBuffer(ctx);
+}
+
 /** 首次使用者手勢時呼叫（現有「點擊進入」畫面即手勢入口），嘗試建立並 resume AudioContext。 */
 export function resumeAudioOnGesture(): void {
   const ctx = ensureContext();

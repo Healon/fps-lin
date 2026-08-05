@@ -58,6 +58,14 @@ declare global {
         doorState: (doorId: string) => "closed" | "opening" | "open" | undefined;
         /** 直接傳送玩家並瞬間觸發通關（等效走進終點觸發區，供測試跳過完整戰鬥流程，M2 新增）。 */
         forceComplete: () => void;
+        /** 目前音樂邏輯狀態（M2 第三階段新增，見 audio/music.ts）：'off' 為尚未啟動或已停止，
+         *  'explore'／'combat' 為雙態音樂系統目前所在的附加層（3 秒滯後才回 explore）。 */
+        musicState: () => "off" | "explore" | "combat";
+        /** 自 ready 起算的單幀最大耗時（毫秒，M2 第三階段新增，見 core/loop.ts）；取夾限前的
+         *  原始幀間時間差，反映真實卡頓而非模擬用的已夾限 dt。 */
+        maxFrameMs: () => number;
+        /** 歸零 maxFrameMs 的量測基準（M2 第三階段新增），供測試在特定劇本段落前重置。 */
+        resetMaxFrameMs: () => void;
       };
     };
   }

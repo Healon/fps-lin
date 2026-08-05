@@ -69,6 +69,7 @@ import {
   playDoorMove,
   setMasterVolume,
 } from "./audio/synth.ts";
+import { MusicSystem } from "./audio/music.ts";
 // window.__p96 的型別宣告見 ./types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效，
 // 不需 import；main.ts 為 esbuild bundle 的實際進入點，避免 import 一個 .d.ts 造成 bundler 誤解析）。
 
@@ -294,6 +295,11 @@ function boot(): void {
 
     setMasterVolume(settingsStore.get().volume); // 正式 API；可在 AudioContext 建立前呼叫（見 synth.ts）
 
+    // M2 第三階段：雙態程序化音樂系統（PLAN §6.5），依 gameState 四態驅動起停與 ducking
+    // （見 audio/music.ts 類別註解）；playing 狀態下的 explore／combat 偵測見下方主迴圈。
+    const music = new MusicSystem();
+    gameState.onChange((next) => music.onGameStateChange(next));
+
     // 射擊視覺回饋狀態機（脈衝手槍沿用 M1 單槽狀態機，見 game/effects.ts）
     const recoil = new Recoil();
     const muzzleFlash = new MuzzleFlashEffect();
@@ -321,9 +327,12 @@ function boot(): void {
       // 每次「點擊進入」（含首次開始與通關後返回主選單再開始）一律先從種子完整重建，
       // 確保每輪都是乾淨的完整流程（本次派工規格：「回主選單後可重新開始完整流程」）。
       resetLevelState({ resetCombat: true, playSound: false });
+      // 先確保 AudioContext 建立並 resume（本次點擊即使用者手勢）：下一行 gameState.start()
+      // 會同步觸發 music.onGameStateChange("playing")→music.start()，須確保屆時 ctx 已可用
+      // （M2 第三階段音樂系統，見 audio/music.ts）。
+      resumeAudioOnGesture();
       gameState.start(); // menu → playing（syncUiForState 會收起主選單、顯示準星）
       input.requestPointerLock();
-      resumeAudioOnGesture();
     });
 
     overlay.onSettings(() => {
@@ -598,6 +607,9 @@ function boot(): void {
           winScreen.show(completionSeconds, killCount);
           gameState.setState("complete");
         },
+        musicState: () => music.getState(),
+        maxFrameMs: () => loop?.getMaxFrameMs() ?? 0,
+        resetMaxFrameMs: () => loop?.resetMaxFrameMs(),
       },
     };
 
@@ -645,6 +657,13 @@ function boot(): void {
             if (attackEvent) applyDamageToPlayer(attackEvent.damage);
           }
           enemies = enemies.filter((e) => !e.removable);
+
+          // M2 第三階段：任一存活敵人處於 chase／attack／retreat／hurt 即視為戰鬥態
+          // （本次派工規格），驅動雙態音樂系統的 3 秒滯後狀態機（見 audio/music.ts）。
+          const anyEnemyAggro = enemies.some(
+            (e) => e.state === "chase" || e.state === "attack" || e.state === "retreat" || e.state === "hurt",
+          );
+          music.update(simDt, anyEnemyAggro);
 
           const respawnTriggered = combat.update(simDt);
           if (respawnTriggered) resetLevelState({ resetCombat: false, playSound: true });
