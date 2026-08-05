@@ -16,7 +16,9 @@ const GRAVITY = 20.0; // m/s^2（無跳躍，但保留重力讓玩家貼地並�
 const EYE_HEIGHT = 1.7; // m
 const KEY_YAW_SPEED = 2.8; // rad/s，方向鍵水平轉速
 const KEY_PITCH_SPEED = 1.8; // rad/s，方向鍵俯仰轉速
-const PLAYER_HALF: Vec3 = { x: 0.4, y: 0.9, z: 0.4 }; // 對應 0.8×1.8×0.8 AABB
+/** 玩家碰撞半長（對應 0.8×1.8×0.8 AABB）。M3 匯出：供 main.ts 建構玩家 AABB 供
+ *  game/projectiles.ts 的 enemy 陣營投射物命中判定使用（見 ProjectileTarget.getAabb）。 */
+export const PLAYER_HALF: Vec3 = { x: 0.4, y: 0.9, z: 0.4 };
 export const PITCH_LIMIT = (89 * Math.PI) / 180;
 const MOUSE_SENSITIVITY = 0.0022;
 

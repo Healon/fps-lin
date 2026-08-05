@@ -5,7 +5,7 @@
 import { test, expect } from "@playwright/test";
 // window.__p96 型別宣告見 src/types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效）。
 
-test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 門 B 開 → 撿散射槍觸發伏擊 → 清 C → 終點門開 → 通關畫面", async ({ page }) => {
+test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 門 B 開 → 撿散射槍觸發伏擊 → 清 C → door-c 開 → 區域 D → 啟動控制台 → door-d 開 → 通關畫面", async ({ page }) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on("console", (msg) => {
@@ -41,13 +41,24 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   const ambushStates = await page.evaluate(() => window.__p96!.debug.enemyTransforms().map((e) => e.state));
   expect(ambushStates.every((s) => s !== "idle"), `伏擊組應直接進 chase，實際狀態：${ambushStates.join(",")}`).toBe(true);
 
-  // 清區域 C：終點門開啟需玩家在 2m 內。
+  // 清區域 C：door-c 開啟需玩家在 2m 內（door-c 原名 door-end，M3 起改為通往區域 D）。
   await page.evaluate(() => window.__p96!.debug.clearArea("C"));
   await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 43, y: 0, z: -10 }));
-  await page.waitForFunction(() => window.__p96!.debug.doorState("door-end") === "open", undefined, { timeout: 3_000 });
+  await page.waitForFunction(() => window.__p96!.debug.doorState("door-c") === "open", undefined, { timeout: 3_000 });
+
+  // 走入區域 D：3 隻射擊體出現（不與巡行體共用陣列，見 window.__p96.spittersAlive）；
+  // door-d 尚未解鎖（控制台未啟動，本次派工規格：door-d 只看控制台不要求清敵）。
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 55, y: 0, z: -10 }));
+  expect(await page.evaluate(() => window.__p96!.spittersAlive())).toBe(3);
+  expect(await page.evaluate(() => window.__p96!.debug.doorState("door-d"))).toBe("closed");
+
+  // 啟動控制台（debug 後門，略過走近距離）：door-d 走近後應解鎖並滑開。
+  await page.evaluate(() => window.__p96!.debug.activateConsole());
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 61, y: 0, z: -10 }));
+  await page.waitForFunction(() => window.__p96!.debug.doorState("door-d") === "open", undefined, { timeout: 3_000 });
 
   // 走入終點觸發區：通關畫面出現，含通關時間與擊殺數。
-  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 46, y: 0, z: -10 }));
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 64, y: 0, z: -10 }));
   await page.waitForFunction(() => window.__p96?.gameState === "complete", undefined, { timeout: 3_000 });
 
   const winPanel = page.locator("#p96-win-overlay");

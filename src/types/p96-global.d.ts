@@ -14,6 +14,8 @@ declare global {
       readonly gameState: GameState;
       /** 存活敵人數（state !== "dead"，不等待死亡溶解動畫播完）。 */
       enemiesAlive: () => number;
+      /** 存活射擊體數（M3 新增，同 enemiesAlive 慣例）。 */
+      spittersAlive: () => number;
       playerHp: () => number;
       /** 目前武器彈藥數（M2 新增，供 menu 狀態射擊閘門測試驗證彈藥未變化）；未裝備武器時為 0。 */
       ammo: () => number;
@@ -52,10 +54,13 @@ declare global {
         /** 直接給予武器（跳過走到台座撿取），等效於實際撿取（含自動裝備／觸發區域 C 伏擊），
          *  供 Playwright 劇本跳過長距離走位（M2 新增）。 */
         grantWeapon: (id: "pistol" | "shotgun") => void;
-        /** 直接清空指定區域全部存活敵人（等效瞬間擊殺，供測試跳過戰鬥磨耗，M2 新增）。 */
-        clearArea: (area: "B" | "C") => void;
+        /** 直接清空指定區域全部存活敵人（等效瞬間擊殺，供測試跳過戰鬥磨耗，M2 新增；
+         *  M3 擴充涵蓋區域 D 的射擊體）。 */
+        clearArea: (area: "B" | "C" | "D") => void;
         /** 查詢指定門目前狀態（M2 新增），查無此門則回傳 undefined。 */
         doorState: (doorId: string) => "closed" | "opening" | "open" | undefined;
+        /** 強制啟動區域 D 控制台，略過走近距離（M3 新增，同 grantWeapon／clearArea 慣例）。 */
+        activateConsole: () => void;
         /** 直接傳送玩家並瞬間觸發通關（等效走進終點觸發區，供測試跳過完整戰鬥流程，M2 新增）。 */
         forceComplete: () => void;
         /** 目前音樂邏輯狀態（M2 第三階段新增，見 audio/music.ts）：'off' 為尚未啟動或已停止，

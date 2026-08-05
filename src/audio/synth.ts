@@ -329,6 +329,62 @@ export function playPickup(): void {
   });
 }
 
+// ---- M3 新增：射擊體發射／蓄力、控制台確認音 ----
+
+/** 射擊體蓄力（windup）：短暫上滑的高頻電子音，帶「充能中」的預警感（telegraph 音效版）。 */
+export function playSpitterWindup(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 300,
+      freqEnd: 1100,
+      duration: 0.38,
+      env: { attack: 0.02, decay: 0.35, peak: 0.32 },
+      filterFreq: 2200,
+    });
+  });
+}
+
+/** 射擊體發射：噴射感 noise burst 加中頻方波，與脈衝手槍／散射槍音色明顯區隔（更悶更濕潤）。 */
+export function playSpitterFire(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.14,
+      filterType: "bandpass",
+      freqStart: 1100,
+      freqEnd: 350,
+      env: { attack: 0.004, decay: 0.13, peak: 0.55 },
+    });
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 700,
+      freqEnd: 180,
+      duration: 0.16,
+      env: { attack: 0.002, decay: 0.15, peak: 0.4 },
+    });
+  });
+}
+
+/** 控制台啟動確認音：清亮上升琶音感（雙音），帶「機關解鎖」的正回饋。 */
+export function playConsoleActivate(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "triangle",
+      freqStart: 440,
+      freqEnd: 880,
+      duration: 0.18,
+      env: { attack: 0.004, decay: 0.16, peak: 0.45 },
+    });
+    playOscVoice(ctx, master, {
+      type: "sine",
+      freqStart: 660,
+      freqEnd: 1320,
+      duration: 0.22,
+      env: { attack: 0.06, decay: 0.18, peak: 0.35 },
+    });
+  });
+}
+
 /** 門機械滑動聲：低頻 noise 加緩慢下滑合成器音，機械感。 */
 export function playDoorMove(): void {
   safePlay((ctx, master) => {

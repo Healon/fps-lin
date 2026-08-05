@@ -39,13 +39,26 @@ test("頂點數量可被 stride 與 24（6 面 x 4 頂點）整除", () => {
   assert.equal((level.wallVertices.length / VERTEX_STRIDE) % 24, 0);
 });
 
-test("門：恰好 3 扇（A／B／終點），條件與朝向符合規格", () => {
+test("門：恰好 4 扇（A／B／C／D），條件與朝向符合規格", () => {
   const level = generateLevel();
-  assert.equal(level.doors.length, 3);
+  assert.equal(level.doors.length, 4);
   const byId = Object.fromEntries(level.doors.map((d) => [d.id, d]));
   assert.equal(byId["door-a"].condition, "has-weapon");
   assert.equal(byId["door-b"].condition, "area-clear:B");
-  assert.equal(byId["door-end"].condition, "area-clear:C");
+  assert.equal(byId["door-c"].condition, "area-clear:C");
+  assert.equal(byId["door-d"].condition, "console-activated");
+});
+
+test("射擊體配置：區域 D 恰好 3 隻，皆標記正確 area", () => {
+  const level = generateLevel();
+  assert.equal(level.spitterSpawns.length, 3);
+  assert.ok(level.spitterSpawns.every((s) => s.area === "D"));
+});
+
+test("控制台：已定義且位於區域 D 範圍內", () => {
+  const level = generateLevel();
+  assert.ok(level.consoleDef.id.length > 0);
+  assert.ok(level.consoleDef.pos.x > 48 && level.consoleDef.pos.x < 62);
 });
 
 test("撿取物：手槍與散射槍各一，彈藥與醫療包依規格數量", () => {

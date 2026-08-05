@@ -124,6 +124,9 @@ uniform float uDissolve;
 uniform float uHitFlash;
 // 警示橘自發光判定：與此顏色夠接近的頂點色視為警示面，不受環境壓暗影響，維持可讀性紅線。
 uniform vec3 uWarningColor;
+// 蓄力 telegraph（0～1，M3 新增：射擊體 windup 時橘光增強，見 game/spitter.ts telegraphIntensity；
+// 非 windup 或非射擊體實例一律傳 0，只影響警示橘部位，不與 uHitFlash 的整體混白效果混淆）。
+uniform float uTelegraph;
 
 out vec4 fragColor;
 
@@ -134,6 +137,9 @@ void main() {
 
   float isWarning = 1.0 - step(0.08, distance(vColor, uWarningColor));
   vec3 lit = mix(litNormal, uWarningColor, isWarning);
+
+  vec3 hotWarning = clamp(uWarningColor * 1.8, 0.0, 1.0);
+  lit = mix(lit, hotWarning, isWarning * clamp(uTelegraph, 0.0, 1.0));
 
   lit = mix(lit, vec3(1.0), clamp(uHitFlash, 0.0, 1.0) * 0.75);
   vec3 finalColor = mix(lit, uFogColor, clamp(uDissolve, 0.0, 1.0));
@@ -184,11 +190,15 @@ const FX_VERTEX_STRIDE = 7;
 export type FxPrimitiveMode = "LINES" | "TRIANGLES" | "POINTS";
 
 export interface EnemyInstance {
+  /** 敵人網格鍵值（M3 新增：'crawler'／'spitter'，見 Renderer.uploadEnemyGeometry）。 */
+  mesh: string;
   model: Mat4;
   /** 0（正常）至 1（完全溶解，趨近霧色）。 */
   dissolve: number;
   /** 0（正常）至 1（剛受擊，混白）。 */
   hitFlash: number;
+  /** 0（正常）至 1（蓄力中，橘光增強，M3 新增，僅射擊體使用）；省略時視為 0。 */
+  telegraph?: number;
 }
 
 // 天花板重用 texture.castle_wall（不另開材質種子），繪製時整體壓暗一階。
@@ -217,7 +227,7 @@ export const DEFAULT_RENDERER_CONFIG: RendererConfig = {
   lightDir: { x: -0.4, y: -1, z: -0.3 },
   lightColor: { x: 1.0, y: 0.8, z: 0.52 },
   ambientColor: { x: 0.85, y: 0.9, z: 1.0 },
-  ambient: 0.36,
+  ambient: 0.52, // 2026-08-05 由 0.36 上調至 0.44 再依 Lin 指定調至 0.52，恐懼氛圍靠對比與光池維持，不靠全黑
 };
 
 export class Renderer {
@@ -244,10 +254,11 @@ export class Renderer {
   private readonly uniformLocations: Record<string, WebGLUniformLocation | null>;
 
   // M1：敵人（頂點色，無材質）獨立 program／VAO；viewmodel（第一人稱手槍）重用同一 program。
+  // M3：敵人網格改為 key 查表（Map），支援多種敵人剪影（crawler／spitter）共用同一 program，
+  // 各自獨立 VAO，逐實例依 EnemyInstance.mesh 選取（同 propVaos 的通用 key 查表慣例）。
   private readonly enemyProgram: WebGLProgram;
   private readonly enemyUniformLocations: Record<string, WebGLUniformLocation | null>;
-  private enemyVao: WebGLVertexArrayObject | null = null;
-  private enemyIndexCount = 0;
+  private readonly enemyMeshes = new Map<string, { vao: WebGLVertexArrayObject; indexCount: number }>();
   private viewmodelVao: WebGLVertexArrayObject | null = null;
   private viewmodelIndexCount = 0;
   // M2：散射槍 viewmodel 另一份幾何（同 program／頂點格式，依目前裝備武器擇一繪製，見 renderViewmodel）。
@@ -300,6 +311,7 @@ export class Renderer {
       uDissolve: gl.getUniformLocation(this.enemyProgram, "uDissolve"),
       uHitFlash: gl.getUniformLocation(this.enemyProgram, "uHitFlash"),
       uWarningColor: gl.getUniformLocation(this.enemyProgram, "uWarningColor"),
+      uTelegraph: gl.getUniformLocation(this.enemyProgram, "uTelegraph"),
     };
     this.fxUniformLocations = {
       uModel: gl.getUniformLocation(this.fxProgram, "uModel"),
@@ -355,8 +367,11 @@ export class Renderer {
     this.ceilingIndexCount = indexCount;
   }
 
-  /** 上傳敵人（巡行體）共用幾何：所有實例共用同一份 VAO，逐實例只換 uModel／uDissolve。 */
-  uploadEnemyGeometry(vertices: Float32Array, indices: Uint32Array): void {
+  /**
+   * 上傳一種敵人網格並登記 key（M3 泛化：crawler／spitter 各自一份 VAO，共用同一
+   * enemyProgram／頂點色格式）。同一 key 重複上傳會覆蓋（呼叫端負責不重複上傳同一 key）。
+   */
+  uploadEnemyGeometry(key: string, vertices: Float32Array, indices: Uint32Array): void {
     const { vao, indexCount } = createVAO(
       this.gl,
       this.enemyProgram,
@@ -365,8 +380,7 @@ export class Renderer {
       CRAWLER_VERTEX_STRIDE,
       ENEMY_LAYOUT,
     );
-    this.enemyVao = vao;
-    this.enemyIndexCount = indexCount;
+    this.enemyMeshes.set(key, { vao, indexCount });
   }
 
   /** 上傳第一人稱武器 viewmodel 幾何（重用敵人的頂點色 program／頂點格式）。 */
@@ -485,15 +499,15 @@ export class Renderer {
   }
 
   /**
-   * 繪製敵人實例：共用同一份幾何（VAO 只綁定一次），逐實例更新 uModel／uDissolve 後各發一次
-   * draw call（敵人數量小，維持個位數 draw call）。不清空畫面，接續在 render() 之後呼叫。
+   * 繪製敵人實例：依 instance.mesh 查表選取對應 VAO（M3 泛化，支援 crawler／spitter 混合陣列），
+   * 只在 mesh key 改變時才重新綁定 VAO（呼叫端一般會先推 crawler 陣列再推 spitter 陣列，
+   * 每幀最多切換一次，維持個位數 VAO 綁定）。不清空畫面，接續在 render() 之後呼叫。
    */
   renderEnemies(viewMatrix: Mat4, instances: EnemyInstance[]): void {
-    if (!this.enemyVao || instances.length === 0) return;
+    if (instances.length === 0) return;
     const gl = this.gl;
 
     gl.useProgram(this.enemyProgram);
-    gl.bindVertexArray(this.enemyVao);
 
     gl.uniformMatrix4fv(this.enemyUniformLocations.uView, false, viewMatrix);
     gl.uniformMatrix4fv(this.enemyUniformLocations.uProjection, false, this.projection);
@@ -518,11 +532,19 @@ export class Renderer {
     );
     gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
 
+    let boundKey: string | null = null;
     for (const instance of instances) {
+      const entry = this.enemyMeshes.get(instance.mesh);
+      if (!entry) continue;
+      if (boundKey !== instance.mesh) {
+        gl.bindVertexArray(entry.vao);
+        boundKey = instance.mesh;
+      }
       gl.uniformMatrix4fv(this.enemyUniformLocations.uModel, false, instance.model);
       gl.uniform1f(this.enemyUniformLocations.uDissolve, instance.dissolve);
       gl.uniform1f(this.enemyUniformLocations.uHitFlash, instance.hitFlash);
-      gl.drawElements(gl.TRIANGLES, this.enemyIndexCount, gl.UNSIGNED_INT, 0);
+      gl.uniform1f(this.enemyUniformLocations.uTelegraph, instance.telegraph ?? 0);
+      gl.drawElements(gl.TRIANGLES, entry.indexCount, gl.UNSIGNED_INT, 0);
     }
 
     gl.bindVertexArray(null);
@@ -570,6 +592,7 @@ export class Renderer {
     );
     gl.uniform1f(this.enemyUniformLocations.uDissolve, 0);
     gl.uniform1f(this.enemyUniformLocations.uHitFlash, 0);
+    gl.uniform1f(this.enemyUniformLocations.uTelegraph, 0);
     gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
 
     gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_INT, 0);
@@ -594,6 +617,7 @@ export class Renderer {
     gl.uniform3f(this.enemyUniformLocations.uFogColor, this.config.fogColor.x, this.config.fogColor.y, this.config.fogColor.z);
     gl.uniform1f(this.enemyUniformLocations.uDissolve, 0);
     gl.uniform1f(this.enemyUniformLocations.uHitFlash, 0);
+    gl.uniform1f(this.enemyUniformLocations.uTelegraph, 0);
     gl.uniform3f(this.enemyUniformLocations.uWarningColor, WARNING_COLOR.r, WARNING_COLOR.g, WARNING_COLOR.b);
 
     for (const instance of instances) {

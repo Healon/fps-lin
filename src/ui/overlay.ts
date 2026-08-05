@@ -78,6 +78,7 @@ export class Overlay {
       "滑鼠 或 方向鍵：視角",
       "滑鼠左鍵 或 空白鍵：射擊",
       "1 2：切換武器",
+      "E：互動",
       "Esc：暫停",
     ].join("<br>");
     Object.assign(controls.style, {

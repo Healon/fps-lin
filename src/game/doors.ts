@@ -16,6 +16,8 @@ export interface DoorRuntimeContext {
   hasWeapon: boolean;
   areaClearB: boolean;
   areaClearC: boolean;
+  /** M3 新增：區域 D 控制台是否已啟動（見 game/console.ts）。 */
+  consoleActivated: boolean;
 }
 
 export interface DoorRuntimeState {
@@ -36,6 +38,7 @@ export const DOOR_HINT_TEXT: Readonly<Record<DoorOpenCondition, string>> = {
   "has-weapon": "需要武器",
   "area-clear:B": "偵測到生命跡象，門鎖定中",
   "area-clear:C": "偵測到生命跡象，門鎖定中",
+  "console-activated": "控制台尚未啟動，門鎖定中",
 };
 
 function conditionMet(condition: DoorOpenCondition, ctx: DoorRuntimeContext): boolean {
@@ -46,6 +49,8 @@ function conditionMet(condition: DoorOpenCondition, ctx: DoorRuntimeContext): bo
       return ctx.areaClearB;
     case "area-clear:C":
       return ctx.areaClearC;
+    case "console-activated":
+      return ctx.consoleActivated;
     default:
       return false;
   }

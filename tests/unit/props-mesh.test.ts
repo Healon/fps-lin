@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { generateDoorMesh, DOOR_VERTEX_STRIDE } from "../../src/procgen/mesh/door.ts";
 import { generateShotgunMesh, SHOTGUN_VERTEX_STRIDE } from "../../src/procgen/mesh/shotgun.ts";
 import { generateAmmoBoxMesh, generateMedkitBoxMesh, PICKUP_PROP_VERTEX_STRIDE } from "../../src/procgen/mesh/pickup-props.ts";
+import { generateConsoleMesh, CONSOLE_VERTEX_STRIDE } from "../../src/procgen/mesh/console.ts";
 
 test("generateDoorMesh：決定性、非空、索引不越界", () => {
   const a = generateDoorMesh();
@@ -64,4 +65,19 @@ test("generateMedkitBoxMesh：含治療綠（#3DFF8E）十字頂點色", () => {
     }
   }
   assert.ok(found, "應含治療綠十字頂點色");
+});
+
+test("generateConsoleMesh：決定性、非空、索引不越界（M3 新增）", () => {
+  const a = generateConsoleMesh(false);
+  const b = generateConsoleMesh(false);
+  assert.deepEqual(Array.from(a.vertices), Array.from(b.vertices));
+  assert.ok(a.vertices.length > 0);
+  const vertexCount = a.vertices.length / CONSOLE_VERTEX_STRIDE;
+  for (const idx of a.indices) assert.ok(idx >= 0 && idx < vertexCount);
+});
+
+test("generateConsoleMesh：idle 與 active 版本頂點資料不同（面板變色，M3 新增）", () => {
+  const idle = generateConsoleMesh(false);
+  const active = generateConsoleMesh(true);
+  assert.notDeepEqual(Array.from(idle.vertices), Array.from(active.vertices));
 });

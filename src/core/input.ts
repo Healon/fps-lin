@@ -44,6 +44,10 @@ export class InputManager {
   /** 數字鍵 1／2（切換武器）為邊緣觸發（keydown 當下才記一次，非按住持續觸發），
    *  M2 新增；每幀由 consumeWeaponSwitch() 讀取並清空，同 consumeMouseDelta() 慣例。 */
   private pendingWeaponSwitch: 1 | 2 | null = null;
+  /** E 鍵（互動：控制台等）邊緣觸發，M3 新增；每幀由 consumeInteract() 讀取並清空，
+   *  同 consumeWeaponSwitch() 慣例。只在 gameState === "playing" 時由呼叫端（main.ts）套用生效，
+   *  本類別自身不知道遊戲狀態（同其餘輸入慣例）。 */
+  private pendingInteract = false;
   private readonly canvas: HTMLCanvasElement;
   private readonly onPointerLockChange: PointerLockChangeCallback | undefined;
 
@@ -55,6 +59,11 @@ export class InputManager {
     }
     if (e.code === "Digit2") {
       this.pendingWeaponSwitch = 2;
+      e.preventDefault();
+      return;
+    }
+    if (e.code === "KeyE") {
+      this.pendingInteract = true;
       e.preventDefault();
       return;
     }
@@ -179,6 +188,13 @@ export class InputManager {
   consumeWeaponSwitch(): 1 | 2 | null {
     const req = this.pendingWeaponSwitch;
     this.pendingWeaponSwitch = null;
+    return req;
+  }
+
+  /** 取出並清空 E 鍵的待處理互動請求（每幀呼叫一次，邊緣觸發，M3 新增）。 */
+  consumeInteract(): boolean {
+    const req = this.pendingInteract;
+    this.pendingInteract = false;
     return req;
   }
 

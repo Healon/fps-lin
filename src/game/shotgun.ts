@@ -8,8 +8,7 @@ import { stream } from "../rng/rng.ts";
 import type { Vec3 } from "../core/math.ts";
 import { crossVec3, normalizeVec3 } from "../core/math.ts";
 import type { Aabb } from "../procgen/level/level.ts";
-import { Crawler } from "./enemy.ts";
-import { raycastScene, type HitKind } from "./weapons.ts";
+import { raycastScene, type HitKind, type Shootable } from "./weapons.ts";
 import { playShotgunFire, playHit, playEnemyDie } from "../audio/synth.ts";
 
 export const SCATTER_PELLET_COUNT = 6;
@@ -23,7 +22,7 @@ export const SCATTER_CONE_HALF_ANGLE = (4 * Math.PI) / 180;
 const HIT_MARKER_DURATION = 0.12; // 秒
 
 export interface PelletHit {
-  hitEnemy: Crawler | null;
+  hitEnemy: Shootable | null;
   hitPoint: Vec3;
   hitKind: HitKind;
   /** 本珠是否為致命一擊（見 weapons.ts FireResult.died 同慣例，避免事後檢查 hitEnemy.state
@@ -91,7 +90,7 @@ export class ScatterShotgun {
     this.shotIndex = 0;
   }
 
-  tryFire(origin: Vec3, forward: Vec3, levelColliders: Aabb[], enemies: Crawler[]): ScatterFireResult {
+  tryFire(origin: Vec3, forward: Vec3, levelColliders: Aabb[], enemies: Shootable[]): ScatterFireResult {
     if (!this.canFire) return { fired: false, pellets: [] };
 
     this.cooldownRemaining = SCATTER_COOLDOWN;

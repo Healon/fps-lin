@@ -15,7 +15,7 @@ function makeDoor(id: string, condition: DoorDef["condition"], pos = { x: 0, y: 
   };
 }
 
-const NEUTRAL_CTX = { hasWeapon: false, areaClearB: false, areaClearC: false };
+const NEUTRAL_CTX = { hasWeapon: false, areaClearB: false, areaClearC: false, consoleActivated: false };
 
 test("初始狀態：所有門 closed，progress=0，碰撞體皆計入 active colliders", () => {
   const doorA = makeDoor("door-a", "has-weapon");
@@ -87,6 +87,18 @@ test("nearestLockedHint：超出提示半徑回傳 null", () => {
   const sys = new DoorSystem([doorA]);
   const farPos = { x: 0, y: 0, z: 20 };
   assert.equal(sys.nearestLockedHint(NEUTRAL_CTX, farPos), null);
+});
+
+test("console-activated 條件：未啟動時鎖定，啟動後可觸發滑開（M3 新增）", () => {
+  const doorD = makeDoor("door-d", "console-activated", { x: 62, y: 0, z: -10 });
+  const sys = new DoorSystem([doorD]);
+  const playerPos = { x: 62, y: 0, z: -9 }; // 距門 1m，在 2m 觸發半徑內
+
+  sys.update(1 / 60, NEUTRAL_CTX, playerPos);
+  assert.equal(sys.get("door-d")!.status, "closed", "控制台未啟動前應鎖定");
+
+  sys.update(1 / 60, { ...NEUTRAL_CTX, consoleActivated: true }, playerPos);
+  assert.equal(sys.get("door-d")!.status, "opening", "控制台啟動後應開始滑開");
 });
 
 test("reset：所有門回到 closed／progress=0", () => {

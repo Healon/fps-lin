@@ -12,8 +12,18 @@
 import type { Vec3 } from "../core/math.ts";
 import type { Aabb } from "../procgen/level/level.ts";
 import { rayAabbIntersect, expandAabb } from "./collision.ts";
-import { Crawler } from "./enemy.ts";
 import { playShoot, playHit, playEnemyDie } from "../audio/synth.ts";
+
+/**
+ * 任何可被玩家武器擊中的敵人（M3 新增，泛化自原本寫死的 Crawler）：Crawler／Spitter
+ * 結構上皆滿足此介面（state／getAabb()／applyDamage()），供 raycastScene 與
+ * ScatterShotgun.tryFire 共用同一套「先命中者算」邏輯，不必為每種敵人各寫一份。
+ */
+export interface Shootable {
+  state: string;
+  getAabb(): Aabb;
+  applyDamage(amount: number): boolean;
+}
 
 export const PULSE_PISTOL_DAMAGE = 12;
 export const PULSE_PISTOL_FIRE_RATE = 3; // 發/秒
@@ -29,7 +39,7 @@ export type HitKind = "enemy" | "wall" | "none";
 
 export interface FireResult {
   fired: boolean;
-  hitEnemy: Crawler | null;
+  hitEnemy: Shootable | null;
   /** 命中點世界座標；fired=false 時為 null，未命中任何東西則為射線終點（MAX_RANGE 處）。 */
   hitPoint: Vec3 | null;
   hitKind: HitKind;
@@ -39,7 +49,7 @@ export interface FireResult {
 }
 
 export interface RaycastHit {
-  hitEnemy: Crawler | null;
+  hitEnemy: Shootable | null;
   hitPoint: Vec3;
   hitKind: HitKind;
 }
@@ -48,10 +58,11 @@ export interface RaycastHit {
  * 共用的場景 raycast：關卡幾何與敵人（皆以「先命中者算」比對交點 t）取最近者。
  * 敵人 AABB 外擴 AIM_ASSIST_MARGIN 做瞄準寬容（見檔頭註解），供 PulsePistol／ScatterShotgun
  * 共用，避免同一段命中判定邏輯在兩把武器各自重複一份（M2 新增散射槍時抽出）。
+ * enemies 參數泛化為 Shootable[]（M3 新增，見上方介面註解），可混合傳入 Crawler／Spitter。
  */
-export function raycastScene(origin: Vec3, direction: Vec3, levelColliders: Aabb[], enemies: Crawler[]): RaycastHit {
+export function raycastScene(origin: Vec3, direction: Vec3, levelColliders: Aabb[], enemies: Shootable[]): RaycastHit {
   let nearestT = MAX_RANGE;
-  let nearestEnemy: Crawler | null = null;
+  let nearestEnemy: Shootable | null = null;
 
   for (const collider of levelColliders) {
     const t = rayAabbIntersect(origin, direction, collider);
@@ -110,7 +121,7 @@ export class PulsePistol {
    * 嘗試開火一次：冷卻中或彈藥不足時回傳 fired=false，不消耗任何資源、不觸發音效。
    * direction 需為單位向量（camera forward）。
    */
-  tryFire(origin: Vec3, direction: Vec3, levelColliders: Aabb[], enemies: Crawler[]): FireResult {
+  tryFire(origin: Vec3, direction: Vec3, levelColliders: Aabb[], enemies: Shootable[]): FireResult {
     if (!this.canFire) return { fired: false, hitEnemy: null, hitPoint: null, hitKind: "none", died: false };
 
     this.cooldownRemaining = PULSE_PISTOL_COOLDOWN;

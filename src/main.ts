@@ -20,15 +20,17 @@ import { TEXTURE_SIZE } from "./procgen/texture/noise.ts";
 import { generateFloorFlagstoneTexture } from "./procgen/texture/flagstone.ts";
 import { generateCastleWallTexture } from "./procgen/texture/castle.ts";
 import { generateCrawlerMesh } from "./procgen/mesh/crawler.ts";
+import { generateSpitterMesh } from "./procgen/mesh/spitter.ts";
 import { generatePistolMesh } from "./procgen/mesh/pistol.ts";
 import { generateShotgunMesh } from "./procgen/mesh/shotgun.ts";
 import { generateDoorMesh } from "./procgen/mesh/door.ts";
 import { generateAmmoBoxMesh, generateMedkitBoxMesh } from "./procgen/mesh/pickup-props.ts";
+import { generateConsoleMesh } from "./procgen/mesh/console.ts";
 import { Renderer } from "./gfx/renderer.ts";
 import type { EnemyInstance } from "./gfx/renderer.ts";
 import { InputManager } from "./core/input.ts";
 import { GameLoop } from "./core/loop.ts";
-import { PlayerController, PITCH_LIMIT } from "./game/player.ts";
+import { PlayerController, PITCH_LIMIT, PLAYER_HALF } from "./game/player.ts";
 import {
   forwardFromYawPitch,
   yawPitchFromDirection,
@@ -45,7 +47,9 @@ import {
 } from "./core/math.ts";
 import { Crawler } from "./game/enemy.ts";
 import type { EnemyState } from "./game/enemy.ts";
-import type { FireResult, WeaponId } from "./game/weapons.ts";
+import { Spitter, SPITTER_PROJECTILE_SPEED } from "./game/spitter.ts";
+import type { SpitterState } from "./game/spitter.ts";
+import type { FireResult, Shootable, WeaponId } from "./game/weapons.ts";
 import { PULSE_PISTOL_MAGAZINE } from "./game/weapons.ts";
 import type { ScatterFireResult } from "./game/shotgun.ts";
 import { SCATTER_MAGAZINE } from "./game/shotgun.ts";
@@ -54,6 +58,9 @@ import { Combat, PLAYER_MAX_HP } from "./game/combat.ts";
 import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect, WeaponSwitchEffect } from "./game/effects.ts";
 import { DoorSystem } from "./game/doors.ts";
 import type { DoorRuntimeContext } from "./game/doors.ts";
+import { ProjectileSystem } from "./game/projectiles.ts";
+import type { ProjectileFaction, ProjectileInstance, ProjectileTarget } from "./game/projectiles.ts";
+import { ConsoleSystem } from "./game/console.ts";
 import { GameStateMachine } from "./game/state.ts";
 import type { GameState } from "./game/state.ts";
 import { SettingsStore, createBrowserStorage } from "./core/settings.ts";
@@ -67,6 +74,9 @@ import {
   playPickup,
   playSwitch,
   playDoorMove,
+  playSpitterFire,
+  playSpitterWindup,
+  playConsoleActivate,
   setMasterVolume,
 } from "./audio/synth.ts";
 import { MusicSystem } from "./audio/music.ts";
@@ -111,6 +121,11 @@ const PROP_PICKUP_HEIGHT = 0.75;
 
 const SHOTGUN_TRACER_LIFETIME = 0.06;
 const SHOTGUN_SPARK_LIFETIME = 0.15;
+
+// M3：射擊體投射物視覺（渲染用現有 FX pipeline，見 buildProjectileVertices／renderFx）。
+const SPITTER_PROJECTILE_RADIUS = 0.15; // m，命中判定容差半徑（game/projectiles.ts expandAabb 用）
+const SPITTER_PROJECTILE_COLOR: [number, number, number] = [1.0, 0.42, 0.15]; // 警示橘（enemy 陣營）
+const CONSOLE_PROMPT_TEXT = "按 E 啟動控制台";
 
 /** 由 view-space 偏移（viewmodel 錨定慣例）換算世界座標，供 tracer 起點等視覺用途。 */
 function viewOffsetToWorld(eye: Vec3, yaw: number, pitch: number, offset: Vec3): Vec3 {
@@ -172,6 +187,41 @@ function buildMultiSparkVertices(hits: { point: Vec3; kind: "enemy" | "wall" }[]
   for (const h of hits) {
     const [r, g, b] = h.kind === "enemy" ? SPARK_COLOR_ENEMY : SPARK_COLOR_WALL;
     verts.push(h.point.x, h.point.y, h.point.z, r, g, b, alpha);
+  }
+  return new Float32Array(verts);
+}
+
+/** 投射物（射擊體發射的能量彈）渲染頂點：每發一個點，依陣營色渲染（M3 新增，沿用 FX pipeline）。 */
+// 投射物彈體視覺：雙層相機面 quad（外層暈光加內核亮心）。
+// 2026-08-05 修正：原實作用 gl.POINTS 固定 14px，遠距離在暗場景形同不可見（Lin 實玩回饋
+// 「沒有看到橘色能量彈」）。改為有世界尺寸的面片，距離遠近皆有實體感。
+const PROJECTILE_GLOW_HALF = 0.12; // m，外層暈光（2026-08-05 由 0.26 縮小，Lin 實玩回饋「能量彈太大」）
+const PROJECTILE_CORE_HALF = 0.05; // m，內核亮心（同上，由 0.11 縮小）
+
+function buildProjectileVertices(instances: ProjectileInstance[], camYaw: number): Float32Array {
+  // billboard：面片沿相機 right（依 yaw 推導）與世界 up 展開，任何視角都正對玩家。
+  // 固定世界 x/y 平面的版本在玩家沿 X 軸看時會被側看成零厚度縫（本修正的根因）。
+  const rightX = Math.cos(camYaw);
+  const rightZ = -Math.sin(camYaw);
+  const offsets: [number, number][] = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, -1],
+    [1, 1],
+    [-1, 1],
+  ];
+  const verts: number[] = [];
+  const pushQuad = (p: ProjectileInstance, half: number, r: number, g: number, b: number, a: number): void => {
+    for (const [dx, dy] of offsets) {
+      verts.push(p.pos.x + dx * half * rightX, p.pos.y + dy * half, p.pos.z + dx * half * rightZ, r, g, b, a);
+    }
+  };
+  for (const p of instances) {
+    const [r, g, b] = p.color;
+    pushQuad(p, PROJECTILE_GLOW_HALF, r, g, b, 0.35); // 外層暈光：原色、半透明
+    // 內核亮心：往白提亮、不透明
+    pushQuad(p, PROJECTILE_CORE_HALF, Math.min(1, r + 0.45), Math.min(1, g + 0.45), Math.min(1, b + 0.45), 1);
   }
   return new Float32Array(verts);
 }
@@ -238,11 +288,14 @@ function boot(): void {
     const floorTexture = generateFloorFlagstoneTexture(TEXTURE_SIZE);
     const wallTexture = generateCastleWallTexture(TEXTURE_SIZE);
     const crawlerMesh = generateCrawlerMesh();
+    const spitterMesh = generateSpitterMesh();
     const pistolMesh = generatePistolMesh();
     const shotgunMesh = generateShotgunMesh();
     const doorMesh = generateDoorMesh();
     const ammoBoxMesh = generateAmmoBoxMesh();
     const medkitBoxMesh = generateMedkitBoxMesh();
+    const consoleIdleMesh = generateConsoleMesh(false);
+    const consoleActiveMesh = generateConsoleMesh(true);
     const genElapsedMs = performance.now() - genStart;
     console.log(`[perf] 關卡與外觀生成耗時 ${genElapsedMs.toFixed(2)}ms（預算 5000ms，上限 15000ms，PLAN §7.4）`);
 
@@ -254,7 +307,8 @@ function boot(): void {
     renderer.uploadWallGeometry(level.wallVertices, level.wallIndices);
     renderer.uploadWallTexture(wallTexture.size, wallTexture.pixels);
     renderer.uploadCeilingGeometry(level.ceilingVertices, level.ceilingIndices);
-    renderer.uploadEnemyGeometry(crawlerMesh.vertices, crawlerMesh.indices);
+    renderer.uploadEnemyGeometry("crawler", crawlerMesh.vertices, crawlerMesh.indices);
+    renderer.uploadEnemyGeometry("spitter", spitterMesh.vertices, spitterMesh.indices);
     renderer.uploadViewmodelGeometry(pistolMesh.vertices, pistolMesh.indices);
     renderer.uploadShotgunViewmodelGeometry(shotgunMesh.vertices, shotgunMesh.indices);
     renderer.uploadPropGeometry("door", doorMesh.vertices, doorMesh.indices);
@@ -262,6 +316,8 @@ function boot(): void {
     renderer.uploadPropGeometry("pickup-shotgun", shotgunMesh.vertices, shotgunMesh.indices);
     renderer.uploadPropGeometry("pickup-ammo", ammoBoxMesh.vertices, ammoBoxMesh.indices);
     renderer.uploadPropGeometry("pickup-medkit", medkitBoxMesh.vertices, medkitBoxMesh.indices);
+    renderer.uploadPropGeometry("console-idle", consoleIdleMesh.vertices, consoleIdleMesh.indices);
+    renderer.uploadPropGeometry("console-active", consoleActiveMesh.vertices, consoleActiveMesh.indices);
 
     const player = new PlayerController(level.playerSpawn);
     player.setSensitivity(settingsStore.get().sensitivity); // 正式 API，同時作用於方向鍵轉速
@@ -276,6 +332,20 @@ function boot(): void {
     }
     let enemies: Crawler[] = spawnAreaEnemies("B", "idle");
     let ambushTriggered = false;
+
+    // M3：射擊體（區域 D），獨立於 Crawler 的 id 命名空間與陣列（不同敵人類別，見 game/spitter.ts）。
+    let nextSpitterId = 0;
+    function spawnSpitters(): Spitter[] {
+      return level.spitterSpawns.map((s) => new Spitter(nextSpitterId++, s.pos, "idle", s.area));
+    }
+    let spitters: Spitter[] = spawnSpitters();
+    /** 上一幀各射擊體的狀態（依 id 索引），供偵測「本幀剛進入 windup」以觸發一次性蓄力音效
+     *  （同 DoorSystem.onOpenStart 的「開始當幀觸發一次」精神，但射擊體無單一系統類別可掛
+     *  回呼，改用本地 Map 追蹤前一幀狀態）。 */
+    const spitterPrevState = new Map<number, SpitterState>();
+
+    const projectiles = new ProjectileSystem();
+    const consoleSystem = new ConsoleSystem(level.consoleDef);
 
     interface PickupRuntime {
       def: PickupDef;
@@ -380,11 +450,30 @@ function boot(): void {
       }
     });
 
-    /** 對玩家造成傷害的共用路徑：命中即播放受傷音效（供敵人近戰與 debug hook 共用）。 */
+    /** 對玩家造成傷害的共用路徑：命中即播放受傷音效（供敵人近戰、投射物與 debug hook 共用）。 */
     function applyDamageToPlayer(amount: number): boolean {
       const applied = combat.damagePlayer(amount);
       if (applied) playPlayerHurt();
       return applied;
+    }
+
+    /** 玩家目前世界 AABB（供 game/projectiles.ts 的 enemy 陣營投射物命中判定使用）。 */
+    function getPlayerAabb(): Aabb {
+      const half = PLAYER_HALF;
+      const center: Vec3 = { x: player.position.x, y: player.position.y + half.y, z: player.position.z };
+      return {
+        min: { x: center.x - half.x, y: center.y - half.y, z: center.z - half.z },
+        max: { x: center.x + half.x, y: center.y + half.y, z: center.z + half.z },
+      };
+    }
+
+    /** 投射物系統的目標查詢（M3 新增）：enemy 陣營回傳玩家（單一元素）；player 陣營
+     *  （電漿步槍等未來武器預留）回傳存活的敵人（Crawler／Spitter 皆可）。 */
+    function projectileTargetQuery(faction: ProjectileFaction): ProjectileTarget[] {
+      if (faction === "enemy") {
+        return [{ getAabb: getPlayerAabb, applyDamage: (amount: number) => applyDamageToPlayer(amount) }];
+      }
+      return [...enemies, ...spitters].filter((e) => e.state !== "dead");
     }
 
     /** 觸發區域 C 伏擊：出生即直接進 chase（跳過 idle 偵測，direct aggro，本次派工規格）。 */
@@ -446,13 +535,15 @@ function boot(): void {
       const eye = player.getEyePosition();
       const forward = forwardFromYawPitch(player.yaw, player.pitch);
       const colliders = activeColliders();
+      // M3：可命中目標泛化為 Crawler／Spitter 混合陣列（見 game/weapons.ts Shootable 介面）。
+      const targets: Shootable[] = [...enemies, ...spitters];
 
       if (current === "pistol") {
-        const result = inventory.pistol.tryFire(eye, forward, colliders, enemies);
+        const result = inventory.pistol.tryFire(eye, forward, colliders, targets);
         handleFireResult(result);
         return result.fired;
       }
-      const result = inventory.shotgun.tryFire(eye, forward, colliders, enemies);
+      const result = inventory.shotgun.tryFire(eye, forward, colliders, targets);
       handleShotgunFireResult(result);
       return result.fired;
     }
@@ -528,6 +619,11 @@ function boot(): void {
       nextEnemyId = 0;
       enemies = spawnAreaEnemies("B", "idle");
       ambushTriggered = false;
+      nextSpitterId = 0;
+      spitters = spawnSpitters();
+      spitterPrevState.clear();
+      projectiles.reset();
+      consoleSystem.reset();
       inventory.reset();
       doorSystem.reset();
       pickupRuntimes = level.pickups.map((def) => ({ def, collected: false }));
@@ -548,6 +644,8 @@ function boot(): void {
         return gameState.state;
       },
       enemiesAlive: () => enemies.filter((e) => e.state !== "dead").length,
+      /** 存活射擊體數（M3 新增，同 enemiesAlive 慣例）。 */
+      spittersAlive: () => spitters.filter((s) => s.state !== "dead").length,
       playerHp: () => combat.playerHp,
       ammo: () => inventory.ammo(),
       currentWeapon: () => inventory.current,
@@ -600,8 +698,19 @@ function boot(): void {
               if (died) killCount++;
             }
           }
+          for (const s of spitters) {
+            if (s.area === area && s.state !== "dead") {
+              const died = s.applyDamage(999999);
+              if (died) killCount++;
+            }
+          }
         },
         doorState: (doorId: string) => doorSystem.get(doorId)?.status,
+        /** 強制啟動區域 D 控制台，略過走近距離（debug 後門，同 grantWeapon／clearArea 慣例，M3 新增）。 */
+        activateConsole: () => {
+          const activated = consoleSystem.forceActivate();
+          if (activated) playConsoleActivate();
+        },
         forceComplete: () => {
           const completionSeconds = runStartSeconds !== null ? elapsedSeconds - runStartSeconds : 0;
           winScreen.show(completionSeconds, killCount);
@@ -619,6 +728,7 @@ function boot(): void {
         elapsedSeconds += dt;
         const mouseDelta = input.consumeMouseDelta(); // 每幀排空，避免暫停期間堆積（見下方閘門）
         const weaponSwitchRequest = input.consumeWeaponSwitch();
+        const interactRequest = input.consumeInteract(); // E 鍵，同上：每幀排空，只在 playing 內生效
 
         // 狀態閘：非 playing（menu／paused／complete）時完全跳過模擬（玩家移動、武器、敵人、
         // 戰鬥、特效、門、撿取），只保留渲染（世界維持在最後一個模擬幀）。debug hooks 定義在
@@ -658,11 +768,47 @@ function boot(): void {
           }
           enemies = enemies.filter((e) => !e.removable);
 
+          // M3：射擊體更新（reposition／windup／shoot），發射事件交給 ProjectileSystem 產生實體
+          // 投射物；windup 一次性音效靠 spitterPrevState 偵測「本幀剛進入 windup」觸發一次。
+          for (const s of spitters) {
+            const wasWindup = spitterPrevState.get(s.id) === "windup";
+            const shootEvent = s.update(simDt, playerFeet, playerEyeForEnemies, colliders);
+            if (!wasWindup && s.state === "windup") playSpitterWindup();
+            spitterPrevState.set(s.id, s.state);
+            if (shootEvent) {
+              projectiles.spawn({
+                pos: shootEvent.origin,
+                dir: shootEvent.dir,
+                speed: SPITTER_PROJECTILE_SPEED,
+                damage: shootEvent.damage,
+                radius: SPITTER_PROJECTILE_RADIUS,
+                faction: "enemy",
+                color: SPITTER_PROJECTILE_COLOR,
+              });
+              playSpitterFire();
+            }
+          }
+          spitters = spitters.filter((s) => !s.removable);
+
+          const projectileHits = projectiles.update(simDt, colliders, projectileTargetQuery);
+          for (const hit of projectileHits) {
+            // player 陣營（電漿步槍等未來武器預留）擊殺敵人時計入擊殺數；enemy 陣營命中玩家的
+            // 傷害與受傷音效已在 applyDamageToPlayer（經 projectileTargetQuery 的 adapter）處理過。
+            if (hit.faction === "player" && hit.died) killCount++;
+          }
+
+          // M3：控制台互動（E 鍵邊緣觸發，只在提示半徑內生效）。
+          if (interactRequest) {
+            const activated = consoleSystem.tryActivate(playerFeet);
+            if (activated) playConsoleActivate();
+          }
+
           // M2 第三階段：任一存活敵人處於 chase／attack／retreat／hurt 即視為戰鬥態
           // （本次派工規格），驅動雙態音樂系統的 3 秒滯後狀態機（見 audio/music.ts）。
-          const anyEnemyAggro = enemies.some(
-            (e) => e.state === "chase" || e.state === "attack" || e.state === "retreat" || e.state === "hurt",
-          );
+          // M3：射擊體的 reposition／windup／shoot／hurt 同樣視為戰鬥態。
+          const anyEnemyAggro =
+            enemies.some((e) => e.state === "chase" || e.state === "attack" || e.state === "retreat" || e.state === "hurt") ||
+            spitters.some((s) => s.state === "reposition" || s.state === "windup" || s.state === "shoot" || s.state === "hurt");
           music.update(simDt, anyEnemyAggro);
 
           const respawnTriggered = combat.update(simDt);
@@ -674,14 +820,20 @@ function boot(): void {
             if (distanceXZ(playerFeet, pr.def.pos) <= PICKUP_RADIUS) collectPickup(pr);
           }
 
-          // 門：條件（持有武器／區域敵人全滅）加玩家靠近距離自動觸發開啟。
+          // 門：條件（持有武器／區域敵人全滅／控制台啟動）加玩家靠近距離自動觸發開啟。
           const areaClearB = !enemies.some((e) => e.area === "B" && e.state !== "dead");
           const areaClearC = ambushTriggered && !enemies.some((e) => e.area === "C" && e.state !== "dead");
-          const doorCtx: DoorRuntimeContext = { hasWeapon: inventory.ownsAny(), areaClearB, areaClearC };
+          const doorCtx: DoorRuntimeContext = {
+            hasWeapon: inventory.ownsAny(),
+            areaClearB,
+            areaClearC,
+            consoleActivated: consoleSystem.isActivated,
+          };
           doorSystem.update(simDt, doorCtx, playerFeet);
 
           const lockedHint = doorSystem.nearestLockedHint(doorCtx, playerFeet);
-          hud.setHint(lockedHint ?? (inventory.ownsAny() ? null : "尚未持有武器，前往台座拾取脈衝手槍"));
+          const consolePrompt = consoleSystem.isPromptVisible(playerFeet) ? CONSOLE_PROMPT_TEXT : null;
+          hud.setHint(lockedHint ?? consolePrompt ?? (inventory.ownsAny() ? null : "尚未持有武器，前往台座拾取脈衝手槍"));
 
           // 終點觸發區：走入即通關（僅在 playing 時檢查，避免 complete 後重複觸發）。
           if (pointInAabb({ x: playerFeet.x, y: playerFeet.y + 0.9, z: playerFeet.z }, level.endTrigger)) {
@@ -694,11 +846,21 @@ function boot(): void {
 
         // 世界：地板／牆面／天花板 → 敵人 → 門與撿取物 props → 世界空間 FX → viewmodel
         renderer.render(viewMatrix, playerEye, elapsedSeconds);
-        const enemyInstances: EnemyInstance[] = enemies.map((e) => ({
-          model: translationRotationYMat4(e.position, e.yaw),
-          dissolve: e.dissolveProgress,
-          hitFlash: e.hitFlashIntensity,
-        }));
+        const enemyInstances: EnemyInstance[] = [
+          ...enemies.map((e) => ({
+            mesh: "crawler",
+            model: translationRotationYMat4(e.position, e.yaw),
+            dissolve: e.dissolveProgress,
+            hitFlash: e.hitFlashIntensity,
+          })),
+          ...spitters.map((s) => ({
+            mesh: "spitter",
+            model: translationRotationYMat4(s.position, s.yaw),
+            dissolve: s.dissolveProgress,
+            hitFlash: s.hitFlashIntensity,
+            telegraph: s.telegraphIntensity,
+          })),
+        ];
         renderer.renderEnemies(viewMatrix, enemyInstances);
 
         // 門與撿取物：共用頂點色 prop pipeline（見 gfx/renderer.ts renderProps）。
@@ -726,6 +888,13 @@ function boot(): void {
             propInstances.push({ key, model: trsMat4(pos, yaw, 1) });
           }
         }
+        // 控制台：M3 新增，依 ConsoleSystem.isActivated 切換 console-idle／console-active 網格
+        // （面板變色，見 procgen/mesh/console.ts）。
+        propInstances.push({
+          key: consoleSystem.isActivated ? "console-active" : "console-idle",
+          model: translationMat4(level.consoleDef.pos),
+        });
+
         renderer.renderProps(viewMatrix, propInstances);
 
         const tracerData = tracer.current;
@@ -748,6 +917,12 @@ function boot(): void {
         if (shotgunSparkElapsed < SHOTGUN_SPARK_LIFETIME && shotgunSparkData.length > 0) {
           const alpha = 1 - shotgunSparkElapsed / SHOTGUN_SPARK_LIFETIME;
           renderer.renderFx(viewMatrix, identity(), buildMultiSparkVertices(shotgunSparkData, alpha), "POINTS");
+        }
+
+        // M3：射擊體投射物（雙層發光 billboard 面片，沿用 FX pipeline，見 buildProjectileVertices）。
+        const projectileInstances = projectiles.instances;
+        if (projectileInstances.length > 0) {
+          renderer.renderFx(viewMatrix, identity(), buildProjectileVertices(projectileInstances, player.yaw), "TRIANGLES");
         }
 
         // viewmodel（清深度蓋在世界之上，錨定畫面右下角）＋槍口閃光；無裝備武器時不繪製

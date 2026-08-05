@@ -13,7 +13,7 @@ const COLOR_HP_LOW = "#FF5A26"; // 警示橘（低血量警示）
 const COLOR_AMMO = "#35E0FF"; // 能源青
 const COLOR_ERROR = "#FF5A26";
 const HP_LOW_THRESHOLD = 0.3;
-const VIGNETTE_INTENSITY = 0.35;
+const VIGNETTE_INTENSITY = 0.28; // 2026-08-05 由 0.35 放鬆（配合整體亮度上調，Lin 實玩回饋）
 
 const WEAPON_LABEL: Readonly<Record<string, string>> = {
   pistol: "脈衝手槍",
