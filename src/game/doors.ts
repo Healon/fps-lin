@@ -27,6 +27,9 @@ export interface DoorRuntimeState {
   status: DoorStatus;
   /** 0（緊閉）至 1（全開）滑動進度。 */
   progress: number;
+  /** M3 第三階段新增（首領戰大門）：一旦為 true，update() 完全略過此門（不再評估條件、
+   *  不再滑動），碰撞體維持 lock() 呼叫當下設定的狀態（見 lock()）。一般門永不設定此欄位。 */
+  locked: boolean;
 }
 
 /** 觸發自動開啟所需的玩家靠近距離（公尺），沿用門 A 規格「2m 內自動滑開」套用至三扇門。 */
@@ -42,6 +45,9 @@ export const DOOR_HINT_TEXT: Readonly<Record<DoorOpenCondition, string>> = {
   "area-clear:C": "偵測到生命跡象，門鎖定中",
   "console-activated": "控制台尚未啟動，門鎖定中",
   "area-clear:E": "偵測到生命跡象，門鎖定中",
+  /** 恆真條件（M3 第三階段：首領戰大門），走近即開，永不顯示鎖定提示（見 nearestLockedHint
+   *  只在 !conditionMet 時才回傳提示文字，本條件恆為 true 故此字串實務上不會被讀取）。 */
+  none: "",
 };
 
 function conditionMet(condition: DoorOpenCondition, ctx: DoorRuntimeContext): boolean {
@@ -56,6 +62,8 @@ function conditionMet(condition: DoorOpenCondition, ctx: DoorRuntimeContext): bo
       return ctx.consoleActivated;
     case "area-clear:E":
       return ctx.areaClearE;
+    case "none":
+      return true;
     default:
       return false;
   }
@@ -70,7 +78,7 @@ export class DoorSystem {
   private onOpenStartCb: ((id: string) => void) | null = null;
 
   constructor(doors: readonly DoorDef[]) {
-    this.states = doors.map((def) => ({ def, status: "closed" as DoorStatus, progress: 0 }));
+    this.states = doors.map((def) => ({ def, status: "closed" as DoorStatus, progress: 0, locked: false }));
   }
 
   /** 門開始滑動當幀觸發一次（供 main.ts 播放門機械聲，避免每幀重複播放）。 */
@@ -96,11 +104,26 @@ export class DoorSystem {
     for (const s of this.states) {
       s.status = "closed";
       s.progress = 0;
+      s.locked = false;
     }
+  }
+
+  /**
+   * 永久鎖定一扇門（M3 第三階段新增，首領戰大門）：立即強制設為緊閉（碰撞體生效）並標記
+   * locked=true，此後 update() 完全略過此門，不論條件是否達成、玩家是否靠近皆不再滑開
+   * （見類別頭註解）。查無此門 id 則無動作。main.ts 於偵測玩家跨入首領大廳時呼叫。
+   */
+  lock(id: string): void {
+    const s = this.states.find((s) => s.def.id === id);
+    if (!s) return;
+    s.status = "closed";
+    s.progress = 0;
+    s.locked = true;
   }
 
   update(dt: number, ctx: DoorRuntimeContext, playerPos: Vec3): void {
     for (const s of this.states) {
+      if (s.locked) continue;
       if (s.status === "closed") {
         if (conditionMet(s.def.condition, ctx) && distanceXZ(playerPos, s.def.pos) <= TRIGGER_RADIUS) {
           s.status = "opening";

@@ -18,6 +18,7 @@ test("音樂雙態：aggro 轉 combat 後單向持續，敵人清空不退回", 
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 點擊進入後（explore 起始層），出生點附近無敵人 aggro：musicState 應為 explore。
@@ -37,6 +38,7 @@ test("音樂雙態：aggro 轉 combat 後單向持續，敵人清空不退回", 
   // 重新開始應重置回 explore（resetToExplore：combat 單向化後，新局不得殘留上一局的戰鬥層）。
   await page.evaluate(() => window.__p96!.debug.setState("paused"));
   await page.locator('[data-role="pause-restart"]').click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（重新開始重播 intro，見 ui/menu.ts IntroScreen）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
   expect(await page.evaluate(() => window.__p96!.debug.musicState())).toBe("explore");
 

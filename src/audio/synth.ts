@@ -449,6 +449,154 @@ export function playWardenChargeImpact(): void {
   });
 }
 
+// ---- M3 第三階段新增：能量砲充能／發射、首領彈幕／召喚／震波 telegraph 與引爆、
+// 首領受擊與死亡 ----
+
+/** 能量砲充能起始：上升音調（本次派工規格），持續整個充能期間營造「蓄勢待發」的張力，
+ *  單次觸發即可（不需逐幀重播，長 duration 涵蓋 CANNON_CHARGE_DURATION 全程）。 */
+export function playCannonChargeStart(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 140,
+      freqEnd: 900,
+      duration: 1.2,
+      env: { attack: 0.05, decay: 1.1, peak: 0.4 },
+      filterFreq: 2400,
+    });
+  });
+}
+
+/** 能量砲發射：重低音加寬頻 noise burst，遠比其餘武器沉重（本次派工規格：「重低音」）。 */
+export function playCannonFire(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.22,
+      filterType: "lowpass",
+      freqStart: 2200,
+      freqEnd: 300,
+      env: { attack: 0.002, decay: 0.2, peak: 0.75 },
+    });
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 220,
+      freqEnd: 40,
+      duration: 0.32,
+      env: { attack: 0.002, decay: 0.3, peak: 0.6 },
+    });
+  });
+}
+
+/** 首領彈幕單發發射聲：短促電子脈衝，與射擊體發射聲區隔（更尖銳、更具機械節奏感）。 */
+export function playBossBarrageFire(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 950,
+      freqEnd: 260,
+      duration: 0.06,
+      env: { attack: 0.001, decay: 0.055, peak: 0.32 },
+    });
+  });
+}
+
+/** 首領召喚：低頻上升掃頻加噪音，帶「喚醒」感。 */
+export function playBossSummon(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 80,
+      freqEnd: 260,
+      duration: 0.5,
+      env: { attack: 0.02, decay: 0.46, peak: 0.45 },
+      filterFreq: 1200,
+    });
+    playNoiseVoice(ctx, master, {
+      duration: 0.45,
+      filterType: "bandpass",
+      freqStart: 600,
+      freqEnd: 1400,
+      env: { attack: 0.02, decay: 0.4, peak: 0.3 },
+    });
+  });
+}
+
+/** 首領全場脈衝震波 telegraph：低鳴，涵蓋 SHOCKWAVE_TELEGRAPH_DURATION（1.2 秒）全程，
+ *  單次觸發即可（同能量砲充能音慣例）。 */
+export function playBossShockwaveTelegraph(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sine",
+      freqStart: 45,
+      freqEnd: 65,
+      duration: 1.2,
+      env: { attack: 0.1, decay: 1.05, peak: 0.55 },
+      filterFreq: 300,
+    });
+  });
+}
+
+/** 首領全場脈衝震波引爆：厚重寬頻爆裂聲，明顯比守衛體衝撞撞擊更巨大（首領規格）。 */
+export function playBossShockwaveDetonate(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.35,
+      filterType: "lowpass",
+      freqStart: 3000,
+      freqEnd: 120,
+      env: { attack: 0.001, decay: 0.32, peak: 0.85 },
+    });
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 180,
+      freqEnd: 30,
+      duration: 0.4,
+      env: { attack: 0.001, decay: 0.38, peak: 0.65 },
+    });
+  });
+}
+
+/** 首領受擊：厚重金屬撞擊感，與一般敵人命中聲（playHit）區隔。 */
+export function playBossHit(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.08,
+      filterType: "bandpass",
+      freqStart: 1800,
+      freqEnd: 700,
+      env: { attack: 0.001, decay: 0.07, peak: 0.5 },
+    });
+    playOscVoice(ctx, master, {
+      type: "triangle",
+      freqStart: 300,
+      freqEnd: 150,
+      duration: 0.1,
+      env: { attack: 0.001, decay: 0.09, peak: 0.35 },
+    });
+  });
+}
+
+/** 首領死亡：巨大爆炸感（寬頻 noise 長衰減加低頻鋸齒下滑），遠比一般敵人死亡聲（playEnemyDie）
+ *  更長更沉重，呼應「核心過載」的真結局視覺。 */
+export function playBossDeath(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 1.1,
+      filterType: "lowpass",
+      freqStart: 4000,
+      freqEnd: 80,
+      env: { attack: 0.005, decay: 1.0, peak: 0.9 },
+    });
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 220,
+      freqEnd: 20,
+      duration: 1.3,
+      env: { attack: 0.005, decay: 1.2, peak: 0.55 },
+    });
+  });
+}
+
 /** 門機械滑動聲：低頻 noise 加緩慢下滑合成器音，機械感。 */
 export function playDoorMove(): void {
   safePlay((ctx, master) => {

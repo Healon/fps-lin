@@ -22,12 +22,15 @@ import { generateCastleWallTexture } from "./procgen/texture/castle.ts";
 import { generateCrawlerMesh } from "./procgen/mesh/crawler.ts";
 import { generateSpitterMesh } from "./procgen/mesh/spitter.ts";
 import { generateWardenMesh } from "./procgen/mesh/warden.ts";
+import { generateBossMesh } from "./procgen/mesh/boss.ts";
 import { generatePistolMesh } from "./procgen/mesh/pistol.ts";
 import { generateShotgunMesh } from "./procgen/mesh/shotgun.ts";
 import { generatePlasmaRifleMesh } from "./procgen/mesh/plasma-rifle.ts";
+import { generateCannonMesh } from "./procgen/mesh/cannon.ts";
 import { generateDoorMesh } from "./procgen/mesh/door.ts";
 import { generateAmmoBoxMesh, generateMedkitBoxMesh } from "./procgen/mesh/pickup-props.ts";
 import { generateConsoleMesh } from "./procgen/mesh/console.ts";
+import { generateEnergyCoreMesh } from "./procgen/mesh/energy-core.ts";
 import { Renderer } from "./gfx/renderer.ts";
 import type { EnemyInstance } from "./gfx/renderer.ts";
 import { InputManager } from "./core/input.ts";
@@ -54,12 +57,16 @@ import { Spitter, SPITTER_PROJECTILE_SPEED } from "./game/spitter.ts";
 import type { SpitterState } from "./game/spitter.ts";
 import { Warden } from "./game/warden.ts";
 import type { WardenState } from "./game/warden.ts";
+import { Boss, BOSS_MAX_HP, BOSS_NAME, BOSS_DEATH_SEQUENCE_DURATION } from "./game/boss.ts";
+import type { BossState } from "./game/boss.ts";
 import type { FireResult, Shootable, WeaponId } from "./game/weapons.ts";
 import { PULSE_PISTOL_MAGAZINE } from "./game/weapons.ts";
 import type { ScatterFireResult } from "./game/shotgun.ts";
 import { SCATTER_MAGAZINE } from "./game/shotgun.ts";
 import { PLASMA_RIFLE_MAGAZINE } from "./game/plasma.ts";
 import type { PlasmaFireResult } from "./game/plasma.ts";
+import { CANNON_MAGAZINE } from "./game/cannon.ts";
+import type { CannonFireResult } from "./game/cannon.ts";
 import { WeaponInventory } from "./game/inventory.ts";
 import { Combat, PLAYER_MAX_HP } from "./game/combat.ts";
 import { Recoil, MuzzleFlashEffect, TracerEffect, SparkEffect, WeaponSwitchEffect } from "./game/effects.ts";
@@ -73,7 +80,7 @@ import type { GameState } from "./game/state.ts";
 import { SettingsStore, createBrowserStorage } from "./core/settings.ts";
 import { Overlay } from "./ui/overlay.ts";
 import { Hud } from "./ui/hud.ts";
-import { PauseMenu, SettingsPanel, WinScreen } from "./ui/menu.ts";
+import { PauseMenu, SettingsPanel, WinScreen, IntroScreen } from "./ui/menu.ts";
 import {
   resumeAudioOnGesture,
   playPlayerHurt,
@@ -88,6 +95,12 @@ import {
   playEnemyDie,
   playWardenChargeWindup,
   playWardenChargeImpact,
+  playBossBarrageFire,
+  playBossSummon,
+  playBossShockwaveTelegraph,
+  playBossShockwaveDetonate,
+  playBossHit,
+  playBossDeath,
   setMasterVolume,
 } from "./audio/synth.ts";
 import { MusicSystem } from "./audio/music.ts";
@@ -138,6 +151,21 @@ const SHOTGUN_SPARK_LIFETIME = 0.15;
 const SPITTER_PROJECTILE_RADIUS = 0.15; // m，命中判定容差半徑（game/projectiles.ts expandAabb 用）
 const SPITTER_PROJECTILE_COLOR: [number, number, number] = [1.0, 0.42, 0.15]; // 警示橘（enemy 陣營）
 const CONSOLE_PROMPT_TEXT = "按 E 啟動控制台";
+
+// M3 第三階段：首領彈幕投射物視覺（enemy 陣營，同射擊體警示橘但半徑略大，呼應「首領級」量感）。
+const BOSS_BARRAGE_PROJECTILE_RADIUS = 0.2;
+const BOSS_BARRAGE_PROJECTILE_COLOR: [number, number, number] = [1.0, 0.35, 0.1];
+/** 玩家 x 座標跨過此線即視為「已走入首領大廳」（區域 F 大門在 x=98，門厚加安全餘量）。 */
+const BOSS_ARENA_ENTRY_X = 99;
+/** 召喚巡行體的出生點相對首領位置的固定偏移（決定性，禁止 Math.random，依索引循環取用）。 */
+const BOSS_SUMMON_OFFSETS: Vec3[] = [
+  { x: 1.6, y: 0, z: 0 },
+  { x: -1.6, y: 0, z: 0 },
+  { x: 0, y: 0, z: 1.6 },
+];
+/** 能量砲充能發光三級門檻（本次派工規格，見 procgen/mesh/cannon.ts glowTier）。 */
+const CANNON_GLOW_TIER1_THRESHOLD = 0.34;
+const CANNON_GLOW_TIER2_THRESHOLD = 0.75;
 
 /** 由 view-space 偏移（viewmodel 錨定慣例）換算世界座標，供 tracer 起點等視覺用途。 */
 function viewOffsetToWorld(eye: Vec3, yaw: number, pitch: number, offset: Vec3): Vec3 {
@@ -243,10 +271,6 @@ function buildProjectileVertices(instances: ProjectileInstance[], camYaw: number
   return new Float32Array(verts);
 }
 
-function pointInAabb(p: Vec3, aabb: Aabb): boolean {
-  return p.x >= aabb.min.x && p.x <= aabb.max.x && p.y >= aabb.min.y && p.y <= aabb.max.y && p.z >= aabb.min.z && p.z <= aabb.max.z;
-}
-
 function distanceXZ(a: Vec3, b: Vec3): number {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
@@ -256,6 +280,7 @@ function boot(): void {
   const hud = new Hud();
   const pauseMenu = new PauseMenu();
   const winScreen = new WinScreen();
+  const introScreen = new IntroScreen();
   const settingsStore = new SettingsStore(createBrowserStorage());
   const settingsPanel = new SettingsPanel(settingsStore.get());
   const gameState = new GameStateMachine();
@@ -307,14 +332,19 @@ function boot(): void {
     const crawlerMesh = generateCrawlerMesh();
     const spitterMesh = generateSpitterMesh();
     const wardenMesh = generateWardenMesh();
+    const bossMesh = generateBossMesh();
     const pistolMesh = generatePistolMesh();
     const shotgunMesh = generateShotgunMesh();
     const plasmaRifleMesh = generatePlasmaRifleMesh();
+    const cannonMeshTier0 = generateCannonMesh(0);
+    const cannonMeshTier1 = generateCannonMesh(1);
+    const cannonMeshTier2 = generateCannonMesh(2);
     const doorMesh = generateDoorMesh();
     const ammoBoxMesh = generateAmmoBoxMesh();
     const medkitBoxMesh = generateMedkitBoxMesh();
     const consoleIdleMesh = generateConsoleMesh(false);
     const consoleActiveMesh = generateConsoleMesh(true);
+    const energyCoreMesh = generateEnergyCoreMesh();
     const genElapsedMs = performance.now() - genStart;
     console.log(`[perf] 關卡與外觀生成耗時 ${genElapsedMs.toFixed(2)}ms（預算 5000ms，上限 15000ms，PLAN §7.4）`);
 
@@ -329,17 +359,23 @@ function boot(): void {
     renderer.uploadEnemyGeometry("crawler", crawlerMesh.vertices, crawlerMesh.indices);
     renderer.uploadEnemyGeometry("spitter", spitterMesh.vertices, spitterMesh.indices);
     renderer.uploadEnemyGeometry("warden", wardenMesh.vertices, wardenMesh.indices);
+    renderer.uploadEnemyGeometry("boss", bossMesh.vertices, bossMesh.indices);
     renderer.uploadViewmodelGeometry(pistolMesh.vertices, pistolMesh.indices);
     renderer.uploadShotgunViewmodelGeometry(shotgunMesh.vertices, shotgunMesh.indices);
     renderer.uploadPlasmaViewmodelGeometry(plasmaRifleMesh.vertices, plasmaRifleMesh.indices);
+    renderer.uploadCannonViewmodelGeometry(0, cannonMeshTier0.vertices, cannonMeshTier0.indices);
+    renderer.uploadCannonViewmodelGeometry(1, cannonMeshTier1.vertices, cannonMeshTier1.indices);
+    renderer.uploadCannonViewmodelGeometry(2, cannonMeshTier2.vertices, cannonMeshTier2.indices);
     renderer.uploadPropGeometry("door", doorMesh.vertices, doorMesh.indices);
     renderer.uploadPropGeometry("pickup-pistol", pistolMesh.vertices, pistolMesh.indices);
     renderer.uploadPropGeometry("pickup-shotgun", shotgunMesh.vertices, shotgunMesh.indices);
     renderer.uploadPropGeometry("pickup-plasma", plasmaRifleMesh.vertices, plasmaRifleMesh.indices);
+    renderer.uploadPropGeometry("pickup-cannon", cannonMeshTier0.vertices, cannonMeshTier0.indices);
     renderer.uploadPropGeometry("pickup-ammo", ammoBoxMesh.vertices, ammoBoxMesh.indices);
     renderer.uploadPropGeometry("pickup-medkit", medkitBoxMesh.vertices, medkitBoxMesh.indices);
     renderer.uploadPropGeometry("console-idle", consoleIdleMesh.vertices, consoleIdleMesh.indices);
     renderer.uploadPropGeometry("console-active", consoleActiveMesh.vertices, consoleActiveMesh.indices);
+    renderer.uploadPropGeometry("energy-core", energyCoreMesh.vertices, energyCoreMesh.indices);
 
     const player = new PlayerController(level.playerSpawn);
     player.setSensitivity(settingsStore.get().sensitivity); // 正式 API，同時作用於方向鍵轉速
@@ -377,6 +413,21 @@ function boot(): void {
     /** 上一幀各守衛體的狀態（同 spitterPrevState 慣例），供偵測「本幀剛進入 windup」
      *  觸發一次性衝撞蓄力音效。 */
     const wardenPrevState = new Map<number, WardenState>();
+
+    // M3 第三階段：首領核心守護者（區域 F），獨立於 Crawler／Spitter／Warden 的單一實體
+    // （非陣列，全關卡僅一隻）。bossFightActive 標記玩家是否已跨入首領大廳（見主迴圈
+    // BOSS_ARENA_ENTRY_X 判定），一旦為 true 即鎖住 door-f（DoorSystem.lock()）並啟動戰鬥，
+    // 不可逆轉（唯有 resetLevelState 才會重建）。endingSequenceStarted／endingSequenceElapsed
+    // 驅動首領死亡後的核心過載視覺（全場閃白漸強，見主迴圈與 triggerTrueEnding()）。
+    let boss = new Boss(level.bossPlatforms);
+    let bossFightActive = false;
+    let endingSequenceStarted = false;
+    let endingSequenceElapsed = 0;
+    /** 上一幀首領狀態（同 spitterPrevState／wardenPrevState 慣例），供偵測「本幀剛進入
+     *  shockwave-telegraph」以觸發一次性低鳴音效。 */
+    let bossPrevState: BossState = "inactive";
+    /** 上一幀能量砲是否處於按住充能中（真實輸入路徑的按住／放開邊緣偵測，見主迴圈）。 */
+    let cannonWasFiringPrev = false;
 
     const projectiles = new ProjectileSystem();
     const consoleSystem = new ConsoleSystem(level.consoleDef);
@@ -431,12 +482,20 @@ function boot(): void {
       // 每次「點擊進入」（含首次開始與通關後返回主選單再開始）一律先從種子完整重建，
       // 確保每輪都是乾淨的完整流程（本次派工規格：「回主選單後可重新開始完整流程」）。
       resetLevelState({ resetCombat: true, playSound: false });
-      // 先確保 AudioContext 建立並 resume（本次點擊即使用者手勢）：下一行 gameState.start()
+      // 先確保 AudioContext 建立並 resume（本次點擊即使用者手勢）：稍後 gameState.start()
       // 會同步觸發 music.onGameStateChange("playing")→music.start()，須確保屆時 ctx 已可用
       // （M2 第三階段音樂系統，見 audio/music.ts）。
       resumeAudioOnGesture();
-      gameState.start(); // menu → playing（syncUiForState 會收起主選單、顯示準星）
-      input.requestPointerLock();
+      // M3 第三階段：開場文字（PLAN §4.4）先於「控制權交給玩家」顯示；gameState 維持在 menu
+      // 直到 intro 完成（時間到或按任意鍵跳過）才轉 playing，玩家全程無法移動或開火
+      // （沿用主迴圈既有的 gameState.state==="playing" 狀態閘）。overlay 立即手動隱藏
+      // （不等 gameState 轉變才由 syncUiForState 收起），維持既有「點擊後 overlay 立即隱藏」行為
+      // （見 tests/playwright/smoke.spec.ts）。
+      overlay.hide();
+      introScreen.show(() => {
+        gameState.start(); // menu → playing（syncUiForState 顯示準星）
+        input.requestPointerLock();
+      });
     });
 
     overlay.onSettings(() => {
@@ -457,8 +516,13 @@ function boot(): void {
     pauseMenu.onRestart(() => {
       resetLevelState({ resetCombat: true, playSound: false });
       music.resetToExplore(); // combat 單向化後（2026-08-05），新局不得殘留上一局的戰鬥層
-      gameState.restart(); // paused → playing，從種子完整重建（重建動作見 resetLevelState）
-      input.requestPointerLock();
+      // M3 第三階段：「重新開始」屬新局起點，重播開場文字（PLAN §4.4「重新開始重播」），
+      // 同 overlay.onStart 慣例：gameState 維持在 paused 直到 intro 完成才轉 playing。
+      pauseMenu.hide();
+      introScreen.show(() => {
+        gameState.restart(); // paused → playing，從種子完整重建（重建動作見 resetLevelState）
+        input.requestPointerLock();
+      });
     });
 
     winScreen.onReturnToMenu(() => {
@@ -515,9 +579,10 @@ function boot(): void {
       };
     }
 
-    /** 投射物系統的目標查詢（M3 新增，第二階段擴充涵蓋守衛體）：enemy 陣營回傳玩家
-     *  （單一元素）；player 陣營（電漿步槍）回傳存活的敵人（Crawler／Spitter／Warden 皆可，
-     *  hitDirection 由 ProjectileSystem.update() 傳入 p.dir，供 Warden 方向性減傷判定使用）。 */
+    /** 投射物系統的目標查詢（M3 新增，第二階段擴充涵蓋守衛體，第三階段擴充涵蓋首領）：
+     *  enemy 陣營回傳玩家（單一元素）；player 陣營（電漿步槍／能量砲）回傳存活的敵人
+     *  （Crawler／Spitter／Warden／Boss 皆可，hitDirection 由 ProjectileSystem.update() 傳入
+     *  p.dir，供 Warden 方向性減傷判定使用；Boss 忽略此參數，全額傷害）。 */
     function projectileTargetQuery(faction: ProjectileFaction): ProjectileTarget[] {
       if (faction === "enemy") {
         return [
@@ -527,7 +592,7 @@ function boot(): void {
           },
         ];
       }
-      return [...enemies, ...spitters, ...wardens].filter((e) => e.state !== "dead");
+      return [...enemies, ...spitters, ...wardens, boss].filter((e) => e.state !== "dead");
     }
 
     /** 觸發區域 C 伏擊：出生即直接進 chase（跳過 idle 偵測，direct aggro，本次派工規格）。 */
@@ -555,6 +620,10 @@ function boot(): void {
           inventory.give("plasma");
           hud.showToast("拾取電漿步槍");
           break;
+        case "weapon-cannon":
+          inventory.give("cannon");
+          hud.showToast("拾取能量砲");
+          break;
         case "ammo-pistol":
           inventory.addAmmo("pistol", AMMO_PISTOL_PICKUP_AMOUNT);
           hud.showToast(`拾取彈藥 +${AMMO_PISTOL_PICKUP_AMOUNT}`);
@@ -576,7 +645,8 @@ function boot(): void {
     }
 
     function grantWeaponDebug(id: WeaponId): void {
-      const kind: PickupKind = id === "pistol" ? "weapon-pistol" : id === "shotgun" ? "weapon-shotgun" : "weapon-plasma";
+      const kind: PickupKind =
+        id === "pistol" ? "weapon-pistol" : id === "shotgun" ? "weapon-shotgun" : id === "plasma" ? "weapon-plasma" : "weapon-cannon";
       const pr = pickupRuntimes.find((p) => p.def.kind === kind && !p.collected);
       if (pr) {
         collectPickup(pr);
@@ -588,7 +658,9 @@ function boot(): void {
 
     /**
      * 共用開火路徑：依 inventory.current 決定驅動哪把武器，回傳是否真的開火。
-     * 供真實輸入路徑（input.firing 且狀態為 playing）與 debug.fire() 共用；debug 呼叫時
+     * 供真實輸入路徑（input.firing 且狀態為 playing，能量砲除外——見主迴圈另行呼叫
+     * chargeTick／releaseCharge，本函式的 cannon 分支僅供 debug.fire() 等單次程式化觸發使用，
+     * 見 game/cannon.ts tryFireFull 檔頭註解）與 debug.fire() 共用；debug 呼叫時
      * activeColliders()／enemies 皆與遊戲狀態無關，天然可在任何狀態下直接生效。
      */
     function performFire(): boolean {
@@ -605,9 +677,16 @@ function boot(): void {
         return result.fired;
       }
 
+      if (current === "cannon") {
+        const result = inventory.cannon.tryFireFull(eye, forward);
+        handleCannonFireResult(result);
+        return result.fired;
+      }
+
       const colliders = activeColliders();
-      // M3：可命中目標泛化為 Crawler／Spitter／Warden 混合陣列（見 game/weapons.ts Shootable 介面）。
-      const targets: Shootable[] = [...enemies, ...spitters, ...wardens];
+      // M3：可命中目標泛化為 Crawler／Spitter／Warden／Boss 混合陣列（見 game/weapons.ts
+      // Shootable 介面；Boss 全額傷害，忽略方向性減傷參數）。
+      const targets: Shootable[] = [...enemies, ...spitters, ...wardens, boss];
 
       if (current === "pistol") {
         const result = inventory.pistol.tryFire(eye, forward, colliders, targets);
@@ -673,14 +752,44 @@ function boot(): void {
      *  （player 陣營命中事件，同時涵蓋電漿步槍與日後能量砲等投射物武器）。 */
     function handlePlasmaFireResult(result: PlasmaFireResult): void {
       if (!result.fired || !result.spawnEvent) return;
-      projectiles.spawn(result.spawnEvent);
+      // tag:"plasma"（M3 第三階段新增）：電漿步槍與能量砲頂點色皆為能源青，命中當下
+      // （projectileHits 迴圈）需要這個標籤才能區分該觸發哪把武器的命中回饋，見
+      // game/projectiles.ts ProjectileSpawnOptions.tag 註解。
+      projectiles.spawn({ ...result.spawnEvent, tag: "plasma" });
       recoil.trigger();
       muzzleFlash.trigger();
     }
 
-    function triggerLevelComplete(): void {
+    /** 能量砲開火視覺回饋（M3 第三階段新增）：同電漿步槍慣例，命中不在此處理（濺射傷害延後至
+     *  ProjectileSystem.update() 引爆，見主迴圈 projectileHits 迴圈）。 */
+    function handleCannonFireResult(result: CannonFireResult): void {
+      if (!result.fired || !result.spawnEvent) return;
+      projectiles.spawn({ ...result.spawnEvent, tag: "cannon" });
+      recoil.trigger();
+      muzzleFlash.trigger();
+    }
+
+    /** 首領死亡觸發的核心過載序列起點（M3 第三階段新增，取代已移除的 endTrigger 機制）：
+     *  播放死亡音效、瞬間清除場上殘存的區域 F 召喚巡行體（核心過載的敘事收尾），
+     *  之後由主迴圈以 BOSS_DEATH_SEQUENCE_DURATION 秒驅動全場閃白，期滿才呼叫
+     *  triggerTrueEnding()。呼叫端須自行保證只呼叫一次（見主迴圈 endingSequenceStarted 旗標）。 */
+    function beginEndingSequence(): void {
+      playBossDeath();
+      for (const e of enemies) {
+        if (e.area === "F" && e.state !== "dead") {
+          const died = e.applyDamage(999999);
+          if (died) killCount++;
+        }
+      }
+    }
+
+    /** 真結局：核心過載序列（BOSS_DEATH_SEQUENCE_DURATION 秒全場閃白）播畢後呼叫，顯示結局畫面
+     *  （三行結尾文字加通關時間與擊殺數，見 ui/menu.ts WinScreen），狀態機沿用既有 complete。 */
+    function triggerTrueEnding(): void {
       if (gameState.state !== "playing") return;
       const completionSeconds = runStartSeconds !== null ? elapsedSeconds - runStartSeconds : elapsedSeconds;
+      hud.hideBossHealth();
+      hud.setCoreOverloadFlash(0);
       winScreen.show(completionSeconds, killCount);
       gameState.complete();
     }
@@ -707,6 +816,15 @@ function boot(): void {
       nextWardenId = 0;
       wardens = spawnWardens();
       wardenPrevState.clear();
+      boss = new Boss(level.bossPlatforms);
+      bossFightActive = false;
+      endingSequenceStarted = false;
+      endingSequenceElapsed = 0;
+      bossPrevState = "inactive";
+      cannonWasFiringPrev = false;
+      hud.hideBossHealth();
+      hud.setBossShockwaveTelegraph(0);
+      hud.setCoreOverloadFlash(0);
       projectiles.reset();
       consoleSystem.reset();
       inventory.reset();
@@ -733,6 +851,8 @@ function boot(): void {
       spittersAlive: () => spitters.filter((s) => s.state !== "dead").length,
       /** 存活守衛體數（M3 第二階段新增，同 enemiesAlive 慣例）。 */
       wardensAlive: () => wardens.filter((w) => w.state !== "dead").length,
+      /** 首領是否存活（M3 第三階段新增，state !== "dead"，涵蓋尚未啟動戰鬥的 inactive）。 */
+      bossAlive: () => boss.state !== "dead",
       playerHp: () => combat.playerHp,
       ammo: () => inventory.ammo(),
       currentWeapon: () => inventory.current,
@@ -780,6 +900,13 @@ function boot(): void {
           wardens
             .filter((w) => w.state !== "dead")
             .map((w) => ({ x: w.position.x, y: w.position.y, z: w.position.z, yaw: w.yaw, state: w.state, hp: w.hp })),
+        /** 首領目前位置／面向／狀態／HP（M3 第三階段新增，供驗收讀取取景與測試斷言）。 */
+        bossTransform: () => ({ x: boss.position.x, y: boss.position.y, z: boss.position.z, yaw: boss.yaw, state: boss.state, hp: boss.hp }),
+        /** 直接設定首領 HP（M3 第三階段新增，供測試壓 HP 門檻觸發加壓，或直接壓至 0 快速通關），
+         *  略過 inactive 防呆與方向性減傷判定（同 clearArea 一擊必殺的 debug 慣例）。 */
+        setBossHp: (hp: number) => boss.setHpDebug(hp),
+        /** 目前能量砲充能進度 0 至 1（M3 第三階段新增，供測試驗證充能條與取消／發射邊界）。 */
+        cannonChargeProgress: () => inventory.cannon.chargeProgress,
         setState: (state: GameState) => gameState.setState(state),
         getSettings: () => settingsStore.get(),
         getFov: () => renderer.getFov(),
@@ -804,14 +931,26 @@ function boot(): void {
             }
           }
         },
-        doorState: (doorId: string) => doorSystem.get(doorId)?.status,
+        /** 查詢指定門目前狀態；M3 第三階段起，永久鎖定的門（見 DoorSystem.lock）回報 "locked"
+         *  而非其內部沿用的 "closed"（locked 是對外觀察用的語意狀態，非 DoorRuntimeState 本身
+         *  的欄位，見 game/doors.ts DoorRuntimeState.locked 註解）。 */
+        doorState: (doorId: string) => {
+          const d = doorSystem.get(doorId);
+          if (!d) return undefined;
+          return d.locked ? "locked" : d.status;
+        },
         /** 強制啟動區域 D 控制台，略過走近距離（debug 後門，同 grantWeapon／clearArea 慣例，M3 新增）。 */
         activateConsole: () => {
           const activated = consoleSystem.forceActivate();
           if (activated) playConsoleActivate();
         },
+        /** 直接觸發結局畫面（等效首領死亡並播完核心過載序列，供測試跳過完整首領戰，M2 新增）。
+         *  刻意不透過 triggerTrueEnding()（該函式限定 gameState==="playing" 才生效）：debug
+         *  手段應在任何狀態下都直接生效（同 fire()／damagePlayer() 等既有 debug 慣例）。 */
         forceComplete: () => {
           const completionSeconds = runStartSeconds !== null ? elapsedSeconds - runStartSeconds : 0;
+          hud.hideBossHealth();
+          hud.setCoreOverloadFlash(0);
           winScreen.show(completionSeconds, killCount);
           gameState.setState("complete");
         },
@@ -848,9 +987,28 @@ function boot(): void {
           } else if (weaponSwitchRequest === 3 && inventory.switchTo("plasma")) {
             weaponSwitchFx.trigger();
             playSwitch();
+          } else if (weaponSwitchRequest === 4 && inventory.switchTo("cannon")) {
+            weaponSwitchFx.trigger();
+            playSwitch();
           }
 
-          if (input.firing) performFire();
+          // 能量砲為充能式（按住累積、放開才發射，見 game/cannon.ts 檔頭註解），真實輸入路徑
+          // 不可走 performFire()（那會在每個按住的模擬幀各觸發一次「已充滿」瞬發，見
+          // game/cannon.ts tryFireFull 檔頭註解）：按住時逐幀呼叫 chargeTick()，偵測到放開
+          // （本幀 input.firing 由 true 轉 false）才呼叫 releaseCharge()。其餘武器維持原邏輯。
+          if (inventory.current === "cannon") {
+            if (input.firing) {
+              inventory.cannon.chargeTick(simDt);
+            } else if (cannonWasFiringPrev) {
+              const eye = player.getEyePosition();
+              const forward = forwardFromYawPitch(player.yaw, player.pitch);
+              handleCannonFireResult(inventory.cannon.releaseCharge(eye, forward));
+            }
+            cannonWasFiringPrev = input.firing;
+          } else {
+            cannonWasFiringPrev = false;
+            if (input.firing) performFire();
+          }
 
           recoil.update(simDt);
           muzzleFlash.update(simDt);
@@ -909,21 +1067,89 @@ function boot(): void {
           }
           wardens = wardens.filter((w) => !w.removable);
 
+          // M3 第三階段：玩家跨入首領大廳（區域 F 能源核心）即鎖住 door-f 並啟動首領戰，
+          // 不可逆轉（唯有 resetLevelState 重建）。判定純看玩家 x 座標（見 BOSS_ARENA_ENTRY_X
+          // 註解），不論走路或 debug.teleportPlayer 抵達皆會觸發。
+          if (!bossFightActive && playerFeet.x > BOSS_ARENA_ENTRY_X) {
+            bossFightActive = true;
+            doorSystem.lock("door-f");
+            boss.activate(playerFeet);
+            hud.showBossHealth(BOSS_NAME);
+          }
+
+          // 首領更新（彈幕掃射／召喚巡行體／全場脈衝震波／平台轉移循環，見 game/boss.ts）。
+          if (bossFightActive && boss.state !== "dead") {
+            const summonedAlive = enemies.filter((e) => e.area === "F" && e.state !== "dead").length;
+            const bossResult = boss.update(simDt, playerFeet, playerEyeForEnemies, colliders, summonedAlive);
+            if (bossPrevState !== "shockwave-telegraph" && boss.state === "shockwave-telegraph") playBossShockwaveTelegraph();
+            bossPrevState = boss.state;
+
+            for (const ev of bossResult.barrageEvents) {
+              projectiles.spawn({
+                pos: ev.pos,
+                dir: ev.dir,
+                speed: ev.speed,
+                damage: ev.damage,
+                radius: BOSS_BARRAGE_PROJECTILE_RADIUS,
+                faction: "enemy",
+                color: BOSS_BARRAGE_PROJECTILE_COLOR,
+              });
+              playBossBarrageFire();
+            }
+
+            if (bossResult.summonRequest && bossResult.summonRequest.count > 0) {
+              const spawned: Crawler[] = [];
+              for (let i = 0; i < bossResult.summonRequest.count; i++) {
+                const offset = BOSS_SUMMON_OFFSETS[i % BOSS_SUMMON_OFFSETS.length];
+                const spawnPos: Vec3 = { x: boss.position.x + offset.x, y: boss.position.y, z: boss.position.z + offset.z };
+                spawned.push(new Crawler(nextEnemyId++, spawnPos, "chase", "F"));
+              }
+              enemies = enemies.concat(spawned);
+              playBossSummon();
+            }
+
+            if (bossResult.shockwaveEvent) {
+              applyDamageToPlayer(bossResult.shockwaveEvent.damage);
+              playBossShockwaveDetonate();
+            }
+          }
+
           const projectileHits = projectiles.update(simDt, colliders, projectileTargetQuery);
           for (const hit of projectileHits) {
-            // player 陣營（電漿步槍等投射物武器）命中敵人：觸發命中回饋（沿用 hitscan 武器的
-            // hitMarker／音效慣例，只是時機延後到命中當下而非開火當下，見 game/plasma.ts）；
+            // player 陣營（電漿步槍／能量砲等投射物武器）命中敵人：觸發命中回饋（沿用 hitscan
+            // 武器的 hitMarker／音效慣例，只是時機延後到命中當下而非開火當下，見 game/plasma.ts／
+            // game/cannon.ts）。tag（M3 第三階段新增）區分是哪把武器命中（兩者頂點色皆為能源青，
+            // 無法從外觀區分，見 game/projectiles.ts ProjectileSpawnOptions.tag 註解）。
             // enemy 陣營命中玩家的傷害與受傷音效已在 applyDamageToPlayer（經 projectileTargetQuery
             // 的 adapter）處理過。
             if (hit.faction === "player") {
-              inventory.plasma.triggerHitMarker();
+              if (hit.tag === "cannon") inventory.cannon.triggerHitMarker();
+              else inventory.plasma.triggerHitMarker();
+
+              const isBossHit = hit.target === boss;
               if (hit.died) {
                 killCount++;
-                playEnemyDie();
+                if (isBossHit) playBossDeath();
+                else playEnemyDie();
               } else {
-                playHit();
+                if (isBossHit) playBossHit();
+                else playHit();
               }
             }
+          }
+
+          // 首領死亡：啟動核心過載結尾序列（僅觸發一次，見 endingSequenceStarted 旗標）；
+          // 序列播完（BOSS_DEATH_SEQUENCE_DURATION 秒全場閃白）才真正進入結局畫面
+          // （triggerTrueEnding，取代已移除的 endTrigger 機制）。
+          if (bossFightActive && boss.state === "dead" && !endingSequenceStarted) {
+            endingSequenceStarted = true;
+            endingSequenceElapsed = 0;
+            beginEndingSequence();
+          }
+          if (endingSequenceStarted && gameState.state === "playing") {
+            endingSequenceElapsed += simDt;
+            hud.setCoreOverloadFlash(Math.min(1, endingSequenceElapsed / BOSS_DEATH_SEQUENCE_DURATION));
+            if (endingSequenceElapsed >= BOSS_DEATH_SEQUENCE_DURATION) triggerTrueEnding();
           }
 
           // M3：控制台互動（E 鍵邊緣觸發，只在提示半徑內生效）。
@@ -937,12 +1163,15 @@ function boot(): void {
           // 敵人清空不退回 explore，僅重新開始或回選單重進才重置）。
           // M3：射擊體的 reposition／windup／shoot／hurt 同樣視為戰鬥態。
           // M3 第二階段：守衛體的 advance／windup／charge／attack／hurt 同樣視為戰鬥態。
+          // M3 第三階段：首領戰啟動即視為戰鬥態（bossFightActive 一旦為 true 即不可逆轉，
+          // 直到通關）。
           const anyEnemyAggro =
             enemies.some((e) => e.state === "chase" || e.state === "attack" || e.state === "retreat" || e.state === "hurt") ||
             spitters.some((s) => s.state === "reposition" || s.state === "windup" || s.state === "shoot" || s.state === "hurt") ||
             wardens.some(
               (w) => w.state === "advance" || w.state === "windup" || w.state === "charge" || w.state === "attack" || w.state === "hurt",
-            );
+            ) ||
+            bossFightActive;
           music.update(simDt, anyEnemyAggro);
 
           const respawnTriggered = combat.update(simDt);
@@ -975,10 +1204,6 @@ function boot(): void {
           const consolePrompt = consoleSystem.isPromptVisible(playerFeet) ? CONSOLE_PROMPT_TEXT : null;
           hud.setHint(lockedHint ?? consolePrompt ?? (inventory.ownsAny() ? null : "尚未持有武器，前往台座拾取脈衝手槍"));
 
-          // 終點觸發區：走入即通關（僅在 playing 時檢查，避免 complete 後重複觸發）。
-          if (pointInAabb({ x: playerFeet.x, y: playerFeet.y + 0.9, z: playerFeet.z }, level.endTrigger)) {
-            triggerLevelComplete();
-          }
         }
 
         const viewMatrix = player.getViewMatrix();
@@ -1007,6 +1232,19 @@ function boot(): void {
             hitFlash: w.hitFlashIntensity,
             telegraph: w.telegraphIntensity,
           })),
+          // M3 第三階段：首領（潛入／浮出以 diveProgress 下沉世界座標近似「潛入谷底」視覺，
+          // 不需額外模型變形）。
+          ...(boss.state === "inactive"
+            ? []
+            : [
+                {
+                  mesh: "boss",
+                  model: translationRotationYMat4({ x: boss.position.x, y: boss.position.y - boss.diveProgress * 2, z: boss.position.z }, boss.yaw),
+                  dissolve: boss.dissolveProgress,
+                  hitFlash: boss.hitFlashIntensity,
+                  telegraph: boss.telegraphIntensity,
+                },
+              ]),
         ];
         renderer.renderEnemies(viewMatrix, enemyInstances);
 
@@ -1025,8 +1263,20 @@ function boot(): void {
           if (pr.collected) continue;
           const bob = Math.sin(elapsedSeconds * PICKUP_BOB_SPEED + pr.def.pos.x) * PICKUP_BOB_AMPLITUDE;
           const yaw = elapsedSeconds * PICKUP_ROTATE_SPEED;
-          if (pr.def.kind === "weapon-pistol" || pr.def.kind === "weapon-shotgun" || pr.def.kind === "weapon-plasma") {
-            const key = pr.def.kind === "weapon-pistol" ? "pickup-pistol" : pr.def.kind === "weapon-shotgun" ? "pickup-shotgun" : "pickup-plasma";
+          if (
+            pr.def.kind === "weapon-pistol" ||
+            pr.def.kind === "weapon-shotgun" ||
+            pr.def.kind === "weapon-plasma" ||
+            pr.def.kind === "weapon-cannon"
+          ) {
+            const key =
+              pr.def.kind === "weapon-pistol"
+                ? "pickup-pistol"
+                : pr.def.kind === "weapon-shotgun"
+                  ? "pickup-shotgun"
+                  : pr.def.kind === "weapon-plasma"
+                    ? "pickup-plasma"
+                    : "pickup-cannon";
             const pos: Vec3 = { x: pr.def.pos.x, y: WEAPON_PICKUP_HEIGHT + bob, z: pr.def.pos.z };
             propInstances.push({ key, model: trsMat4(pos, yaw, WEAPON_PICKUP_SCALE) });
           } else {
@@ -1041,6 +1291,8 @@ function boot(): void {
           key: consoleSystem.isActivated ? "console-active" : "console-idle",
           model: translationMat4(level.consoleDef.pos),
         });
+        // 能源核心視覺結構：M3 第三階段新增，靜態關卡道具，恆常渲染（見 procgen/mesh/energy-core.ts）。
+        propInstances.push({ key: "energy-core", model: translationMat4(level.energyCorePos) });
 
         renderer.renderProps(viewMatrix, propInstances);
 
@@ -1083,7 +1335,12 @@ function boot(): void {
         };
         const currentWeapon = inventory.current;
         if (currentWeapon) {
-          renderer.renderViewmodel(translationMat4(viewmodelOffset), currentWeapon);
+          // 能量砲充能發光三級（M3 第三階段新增，見 procgen/mesh/cannon.ts glowTier）：
+          // 未充能＝0，依 chargeProgress 門檻分級，非能量砲時此值未使用（renderViewmodel 忽略）。
+          const cannonProgress = inventory.cannon.chargeProgress;
+          const cannonGlowTier: 0 | 1 | 2 =
+            cannonProgress >= CANNON_GLOW_TIER2_THRESHOLD ? 2 : cannonProgress >= CANNON_GLOW_TIER1_THRESHOLD ? 1 : 0;
+          renderer.renderViewmodel(translationMat4(viewmodelOffset), currentWeapon, cannonGlowTier);
 
           if (muzzleFlash.active) {
             const muzzleLocal =
@@ -1091,7 +1348,9 @@ function boot(): void {
                 ? shotgunMesh.muzzleLocal
                 : currentWeapon === "plasma"
                   ? plasmaRifleMesh.muzzleLocal
-                  : pistolMesh.muzzleLocal;
+                  : currentWeapon === "cannon"
+                    ? cannonMeshTier0.muzzleLocal
+                    : pistolMesh.muzzleLocal;
             const muzzleViewPos: Vec3 = {
               x: viewmodelOffset.x + muzzleLocal.x,
               y: viewmodelOffset.y + muzzleLocal.y,
@@ -1111,10 +1370,22 @@ function boot(): void {
               ? SCATTER_MAGAZINE
               : currentWeapon === "plasma"
                 ? PLASMA_RIFLE_MAGAZINE
-                : 0,
+                : currentWeapon === "cannon"
+                  ? CANNON_MAGAZINE
+                  : 0,
         );
         hud.setHurtFlash(combat.hurtFlashIntensity);
-        overlay.setCrosshairHit(inventory.pistol.hitMarkerActive || inventory.shotgun.hitMarkerActive || inventory.plasma.hitMarkerActive);
+        hud.updateCannonCharge(inventory.cannon.chargeProgress, currentWeapon === "cannon" && inventory.cannon.isCharging);
+        if (bossFightActive) {
+          hud.updateBossHealth(boss.hp, BOSS_MAX_HP);
+          hud.setBossShockwaveTelegraph(boss.telegraphIntensity);
+        }
+        overlay.setCrosshairHit(
+          inventory.pistol.hitMarkerActive ||
+            inventory.shotgun.hitMarkerActive ||
+            inventory.plasma.hitMarkerActive ||
+            inventory.cannon.hitMarkerActive,
+        );
         if (combat.isDead) {
           hud.showDeathScreen(combat.respawnSecondsRemaining);
         } else {

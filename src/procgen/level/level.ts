@@ -20,7 +20,7 @@ export interface Aabb {
 /** interleaved 頂點格式：position(3) + normal(3) + uv(2) = 8 float / 頂點（沿用 M0 慣例）。 */
 export const VERTEX_STRIDE = 8;
 
-export type DoorOpenCondition = "has-weapon" | "area-clear:B" | "area-clear:C" | "console-activated" | "area-clear:E";
+export type DoorOpenCondition = "has-weapon" | "area-clear:B" | "area-clear:C" | "console-activated" | "area-clear:E" | "none";
 
 export interface DoorDef {
   id: string;
@@ -37,6 +37,7 @@ export type PickupKind =
   | "weapon-pistol"
   | "weapon-shotgun"
   | "weapon-plasma"
+  | "weapon-cannon"
   | "ammo-pistol"
   | "ammo-shotgun"
   | "ammo-plasma"
@@ -95,8 +96,13 @@ export interface LevelData {
   wardenSpawns: WardenSpawnDef[];
   /** M3 新增：區域 D 控制台互動點。 */
   consoleDef: ConsoleDef;
-  /** 終點觸發區：玩家與此區重疊即觸發通關（見 main.ts）。 */
-  endTrigger: Aabb;
+  /** M3 第三階段新增：區域 F 首領固定平台點（4 至 5 個，見 game/boss.ts 平台移動邏輯），
+   *  索引 0 為首領初始所在點（緊鄰能源核心視覺結構）。取代已移除的 endTrigger 機制——
+   *  通關改由首領死亡觸發（見 main.ts），本檔不再產生任何「走進去即通關」的觸發區。 */
+  bossPlatforms: Vec3[];
+  /** M3 第三階段新增：能源核心視覺結構（procgen/mesh/energy-core.ts）世界座標，緊鄰
+   *  bossPlatforms[0]，達成「戰鬥中核心與首領一體」的視覺呈現（本次派工規格）。 */
+  energyCorePos: Vec3;
   playerSpawn: Vec3;
   levelHash: string;
 }
@@ -551,21 +557,106 @@ export function generateLevel(): LevelData {
   };
 
   // ============================================================
-  // 終點小室：door-e 之後的收尾空間，走入 endTrigger 即觸發通關畫面。X:[86,90] Z:[-12,-8]。
+  // 區域 F 前廳（M3 第三階段）：door-e 之後的收尾空間改建為此區，取代已移除的暫時終點小室。
+  // 小房間，X:[86,98] Z:[-13,-7]（沿用區域 E 寬度與牆高 H_E，降低結構複雜度），能量砲台座
+  // 加彈藥醫療補給站。尾端 door-f 為「大門」：無條件（condition "none"，走近即開），
+  // 玩家進入區域 F 大廳後由 main.ts 呼叫 DoorSystem.lock() 永久鎖住直到首領死亡
+  // （見 game/doors.ts locked 欄位；本檔只負責幾何與門定義本身，鎖定行為屬執行期邏輯）。
   // ============================================================
-  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 88, cz: -10, hx: 2, hz: 2 }, 0, H_E);
-  addSolid(wallTarget, colliders, b(88, H_E / 2, -12 - WALL_T, 2 + WALL_T, H_E / 2, WALL_T));
-  addSolid(wallTarget, colliders, b(88, H_E / 2, -8 + WALL_T, 2 + WALL_T, H_E / 2, WALL_T));
-  addSolid(wallTarget, colliders, b(90 + WALL_T, H_E / 2, -10, WALL_T, H_E / 2, 2 + WALL_T));
+  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 92, cz: -10, hx: 6, hz: 3 }, 0, H_E);
+  addSolid(wallTarget, colliders, b(92, H_E / 2, -13 - WALL_T, 6, H_E / 2, WALL_T)); // 北牆
+  addSolid(wallTarget, colliders, b(92, H_E / 2, -7 + WALL_T, 6, H_E / 2, WALL_T)); // 南牆
+  // 東牆：留中央 z:[-11.5,-8.5] 給 door-f，兩側實牆。
+  addSolid(wallTarget, colliders, b(98 + WALL_T, H_E / 2, -12.25, WALL_T, H_E / 2, 0.75));
+  addSolid(wallTarget, colliders, b(98 + WALL_T, H_E / 2, -7.75, WALL_T, H_E / 2, 0.75));
+  // door-f 門楣。
+  addSolid(
+    wallTarget,
+    colliders,
+    b(98 + WALL_T, DOOR_HALF_HEIGHT * 2 + (H_E - DOOR_HALF_HEIGHT * 2) / 2, -10, WALL_T, (H_E - DOOR_HALF_HEIGHT * 2) / 2, DOOR_HALF_WIDTH),
+  );
 
-  const endTrigger: Aabb = {
-    min: { x: 86.5, y: 0, z: -11.5 },
-    max: { x: 90, y: 2.2, z: -8.5 },
+  // 能量砲台座（前段）。
+  addSolid(wallTarget, colliders, b(90, 0.4, -10, 0.3, 0.4, 0.3));
+  const cannonPickup: PickupDef = { id: "pickup-cannon", kind: "weapon-cannon", pos: { x: 90, y: 0, z: -10 } };
+
+  // 彈藥醫療補給站（本次派工規格：F 前廳含彈藥加醫療補給）。
+  const pickupsF: PickupDef[] = [
+    { id: "pickup-ammo-f0", kind: "ammo-plasma", pos: { x: 94, y: 0, z: -8.5 } },
+    { id: "pickup-medkit-f0", kind: "medkit", pos: { x: 94, y: 0, z: -11.5 } },
+  ];
+
+  const doorF: DoorDef = {
+    id: "door-f",
+    pos: { x: 98, y: 0, z: -10 },
+    yaw: Math.PI / 2,
+    condition: "none",
+    collider: aabbFromCenterHalf({ x: 98, y: DOOR_HALF_HEIGHT, z: -10 }, { x: DOOR_HALF_THICKNESS, y: DOOR_HALF_HEIGHT, z: DOOR_HALF_WIDTH }),
   };
 
+  // ============================================================
+  // 區域 F 能源核心（M3 第三階段，首領戰與真結局）：door-f 之後，約 20×20m、高 9m
+  // （H_F）。X:[98,118] Z:[-20,0]，中心 (108,-10)。「圓形感」以掩體排布達成而非牆體本身
+  // 弧形（appendBox／addSolid 僅支援軸對齊箱體，見檔頭工具函式；旋轉牆體超出既有建模慣例
+  // 範圍，本次派工刻意不擴充，改用「方柱陣列排成環狀」營造圓形空間的知覺——玩家在方形牆體
+  // 內看到的是環繞四周的柱列，而非牆角本身，此為此引擎限制下的合理妥協）。8 根方柱掩體
+  // （明顯多於「至少 6 根」下限）呈環狀分佈於中心半徑 F_PILLAR_RADIUS，任何位置附近皆有掩體
+  // 可用（含閃避彈幕與全場脈衝震波，見 game/boss.ts）。
+  // ============================================================
+  const H_F = 9; // 區域 F 挑高（本次派工規格：高 9m）
+  const F_CENTER: Vec3 = { x: 108, y: 0, z: -10 };
+  const F_HALF = 10; // 20×20m 之半
+
+  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: F_CENTER.x, cz: F_CENTER.z, hx: F_HALF, hz: F_HALF }, 0, H_F);
+
+  // 西牆（x=98）：z 範圍在前廳寬度（z:[-13,-7]）之外者無前廳銜接，需全高（H_F）封死；
+  // z 範圍內者下半（y:0～H_E）已由前廳東牆與 door-f 門楣負責，此處只需補封上半
+  // （y:H_E～H_F，因前廳天花板僅 H_E=5，需補滿至區域 F 的 H_F=9）。
+  addSolid(wallTarget, colliders, b(98 + WALL_T, H_F / 2, -16.5, WALL_T, H_F / 2, 3.5)); // z:[-20,-13]
+  addSolid(wallTarget, colliders, b(98 + WALL_T, H_F / 2, -3.5, WALL_T, H_F / 2, 3.5)); // z:[-7,0]
+  addSolid(wallTarget, colliders, b(98 + WALL_T, H_E + (H_F - H_E) / 2, -10, WALL_T, (H_F - H_E) / 2, 3)); // z:[-13,-7] 上半封頂
+
+  addSolid(wallTarget, colliders, b(F_CENTER.x, H_F / 2, F_CENTER.z - F_HALF - WALL_T, F_HALF, H_F / 2, WALL_T)); // 北牆
+  addSolid(wallTarget, colliders, b(F_CENTER.x, H_F / 2, F_CENTER.z + F_HALF + WALL_T, F_HALF, H_F / 2, WALL_T)); // 南牆
+  addSolid(wallTarget, colliders, b(F_CENTER.x + F_HALF + WALL_T, H_F / 2, F_CENTER.z, WALL_T, H_F / 2, F_HALF)); // 東牆（最終牆，無出口）
+
+  // 方柱掩體 ×8（全高 H_F），環狀分佈；angle 起始偏移半步，避開 bossPlatforms 的座標。
+  const F_PILLAR_RADIUS = 6.5;
+  const F_PILLAR_COUNT = 8;
+  const F_PILLAR_HALF = 0.7;
+  for (let i = 0; i < F_PILLAR_COUNT; i++) {
+    const angle = (i / F_PILLAR_COUNT) * Math.PI * 2 + Math.PI / F_PILLAR_COUNT;
+    const px = F_CENTER.x + F_PILLAR_RADIUS * Math.cos(angle);
+    const pz = F_CENTER.z + F_PILLAR_RADIUS * Math.sin(angle);
+    addSolid(wallTarget, colliders, b(px, H_F / 2, pz, F_PILLAR_HALF, H_F / 2, F_PILLAR_HALF));
+  }
+
+  // 首領固定平台點（4 至 5 個，見 game/boss.ts）：索引 0（緊鄰能源核心，東側靠牆）為初始站位，
+  // 其餘分散於大廳各處，皆落在方柱環（半徑 F_PILLAR_RADIUS）之內，不與柱體重疊。
+  const bossPlatforms: Vec3[] = [
+    { x: F_CENTER.x + 5, y: 0, z: F_CENTER.z }, // 0：東側，緊鄰能源核心
+    { x: F_CENTER.x, y: 0, z: F_CENTER.z - 4 }, // 1：北側
+    { x: F_CENTER.x, y: 0, z: F_CENTER.z + 4 }, // 2：南側
+    { x: F_CENTER.x - 5, y: 0, z: F_CENTER.z - 3 }, // 3：西北（近大門）
+    { x: F_CENTER.x - 5, y: 0, z: F_CENTER.z + 3 }, // 4：西南（近大門）
+  ];
+
+  // 能源核心視覺結構（procgen/mesh/energy-core.ts）：緊鄰 bossPlatforms[0]，達成「戰鬥中核心與
+  // 首領一體」的視覺呈現（本次派工規格）。
+  const energyCorePos: Vec3 = { x: F_CENTER.x + 7, y: 0, z: F_CENTER.z };
+
   // ---- 匯總 ----
-  const doors: DoorDef[] = [doorA, doorB, doorC, doorD, doorE];
-  const pickups: PickupDef[] = [pistolPickup, ...pickupsB, shotgunPickup, ...pickupsC, plasmaPickup, ...pickupsE];
+  const doors: DoorDef[] = [doorA, doorB, doorC, doorD, doorE, doorF];
+  const pickups: PickupDef[] = [
+    pistolPickup,
+    ...pickupsB,
+    shotgunPickup,
+    ...pickupsC,
+    plasmaPickup,
+    ...pickupsE,
+    cannonPickup,
+    ...pickupsF,
+  ];
   const enemySpawns: EnemySpawnDef[] = [...enemiesB, ...enemiesC, ...enemiesE];
   const allSpitterSpawns: SpitterSpawnDef[] = [...spitterSpawns, ...spittersE];
   const wardenSpawns: WardenSpawnDef[] = wardensE;
@@ -578,7 +669,8 @@ export function generateLevel(): LevelData {
     allSpitterSpawns,
     wardenSpawns,
     consoleDef,
-    endTrigger,
+    bossPlatforms,
+    energyCorePos,
     playerSpawn,
   );
 
@@ -596,7 +688,8 @@ export function generateLevel(): LevelData {
     spitterSpawns: allSpitterSpawns,
     wardenSpawns,
     consoleDef,
-    endTrigger,
+    bossPlatforms,
+    energyCorePos,
     playerSpawn,
     levelHash,
   };
@@ -623,7 +716,8 @@ function computeLevelHash(
   spitterSpawns: SpitterSpawnDef[],
   wardenSpawns: WardenSpawnDef[],
   consoleDef: ConsoleDef,
-  endTrigger: Aabb,
+  bossPlatforms: Vec3[],
+  energyCorePos: Vec3,
   playerSpawn: Vec3,
 ): string {
   const parts: (number | string)[] = [];
@@ -651,7 +745,8 @@ function computeLevelHash(
   }
   parts.push(consoleDef.id);
   pushVec3(parts, consoleDef.pos);
-  pushAabb(parts as number[], endTrigger);
+  for (const bp of bossPlatforms) pushVec3(parts, bp);
+  pushVec3(parts, energyCorePos);
   pushVec3(parts, playerSpawn);
 
   const serialized = parts.join(",");

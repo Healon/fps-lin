@@ -10,6 +10,7 @@ import { CRAWLER_VERTEX_STRIDE, WARNING_COLOR } from "../procgen/mesh/crawler.ts
 import { PISTOL_VERTEX_STRIDE } from "../procgen/mesh/pistol.ts";
 import { SHOTGUN_VERTEX_STRIDE } from "../procgen/mesh/shotgun.ts";
 import { PLASMA_RIFLE_VERTEX_STRIDE } from "../procgen/mesh/plasma-rifle.ts";
+import { CANNON_VERTEX_STRIDE } from "../procgen/mesh/cannon.ts";
 import { DOOR_VERTEX_STRIDE } from "../procgen/mesh/door.ts";
 
 const VERTEX_SHADER = `#version 300 es
@@ -268,6 +269,10 @@ export class Renderer {
   // M3 第二階段：電漿步槍 viewmodel 另一份幾何（同上慣例）。
   private plasmaViewmodelVao: WebGLVertexArrayObject | null = null;
   private plasmaViewmodelIndexCount = 0;
+  // M3 第三階段：能量砲 viewmodel 三級充能發光幾何（見 procgen/mesh/cannon.ts glowTier），
+  // 依 EnergyCannon.chargeProgress 換算的 tier 於 renderViewmodel() 擇一繪製（同 console.ts
+  // idle／active 換色慣例的三級版本，見該檔案與 procgen/mesh/cannon.ts 檔頭註解）。
+  private readonly cannonViewmodelTiers: { vao: WebGLVertexArrayObject; indexCount: number }[] = [];
 
   // M2：通用「頂點色 prop」實例系統，供門板／撿取物浮動圖示等共用（同 enemyProgram／頂點格式，
   // 依 key 查表取用對應 VAO，逐實例只換 uModel）。避免每種 prop 各開一條新 shader pipeline。
@@ -429,6 +434,13 @@ export class Renderer {
     this.plasmaViewmodelIndexCount = indexCount;
   }
 
+  /** 上傳能量砲 viewmodel 三級充能幾何之一（M3 第三階段新增；tier 0=待機／1=充能中／2=充滿，
+   *  依序呼叫三次，個別覆寫對應索引，見 renderViewmodel 的 cannonGlowTier 參數）。 */
+  uploadCannonViewmodelGeometry(tier: 0 | 1 | 2, vertices: Float32Array, indices: Uint32Array): void {
+    const { vao, indexCount } = createVAO(this.gl, this.enemyProgram, vertices, indices, CANNON_VERTEX_STRIDE, ENEMY_LAYOUT);
+    this.cannonViewmodelTiers[tier] = { vao, indexCount };
+  }
+
   /**
    * 上傳一份 prop 幾何並登記 key（M2 新增：門板、撿取物浮動圖示等共用頂點色 program）。
    * 同一 key 重複上傳會覆蓋（呼叫端負責不重複上傳同一 key）。
@@ -572,12 +584,27 @@ export class Renderer {
    * 繪製第一人稱武器 viewmodel：繪製前清空深度緩衝，讓 viewmodel 蓋在整個世界（含敵人）之上；
    * view 固定為單位矩陣（viewmodel 直接以「相機空間」座標定義，不受玩家實際視角影響，
    * 只由 model 矩陣的 recoil 位移小幅偏移），錨定畫面固定位置。
-   * weapon（M2 新增，預設 "pistol"；M3 第二階段擴充 "plasma"）：依目前裝備武器擇一繪製對應幾何。
+   * weapon（M2 新增，預設 "pistol"；M3 第二階段擴充 "plasma"；M3 第三階段擴充 "cannon"）：
+   * 依目前裝備武器擇一繪製對應幾何。cannonGlowTier（M3 第三階段新增）：weapon==="cannon" 時
+   * 擇對應充能發光幾何（見 uploadCannonViewmodelGeometry／procgen/mesh/cannon.ts），其餘武器忽略。
    */
-  renderViewmodel(model: Mat4, weapon: "pistol" | "shotgun" | "plasma" = "pistol"): void {
-    const vao = weapon === "shotgun" ? this.shotgunViewmodelVao : weapon === "plasma" ? this.plasmaViewmodelVao : this.viewmodelVao;
-    const indexCount =
-      weapon === "shotgun" ? this.shotgunViewmodelIndexCount : weapon === "plasma" ? this.plasmaViewmodelIndexCount : this.viewmodelIndexCount;
+  renderViewmodel(model: Mat4, weapon: "pistol" | "shotgun" | "plasma" | "cannon" = "pistol", cannonGlowTier: 0 | 1 | 2 = 0): void {
+    let vao: WebGLVertexArrayObject | null;
+    let indexCount: number;
+    if (weapon === "shotgun") {
+      vao = this.shotgunViewmodelVao;
+      indexCount = this.shotgunViewmodelIndexCount;
+    } else if (weapon === "plasma") {
+      vao = this.plasmaViewmodelVao;
+      indexCount = this.plasmaViewmodelIndexCount;
+    } else if (weapon === "cannon") {
+      const entry = this.cannonViewmodelTiers[cannonGlowTier];
+      vao = entry?.vao ?? null;
+      indexCount = entry?.indexCount ?? 0;
+    } else {
+      vao = this.viewmodelVao;
+      indexCount = this.viewmodelIndexCount;
+    }
     if (!vao) return;
     const gl = this.gl;
 

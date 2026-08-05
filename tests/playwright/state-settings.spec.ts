@@ -47,6 +47,7 @@ test.describe("M2 遊戲狀態機與設定系統", () => {
     await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
 
     await page.locator("#p96-start-overlay").click();
+    await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
     await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
     // M2 第二階段：巡行體改在區域 B（離出生點甚遠，出生點附近站著不動不會進入偵測範圍），

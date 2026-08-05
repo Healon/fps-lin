@@ -62,6 +62,104 @@ function buildMenuButton(label: string): HTMLButtonElement {
   return btn;
 }
 
+/** 開場文字（PLAN §4.4：三至五行，繁體全形標點，極簡）。M3 第三階段新增。 */
+const INTRO_LINES: readonly string[] = [
+  "你在失控的地下能源設施甦醒。",
+  "機械系統正在吞噬、融合殘存的生物組織。",
+  "警報聲迴盪在鏽蝕的走廊深處。",
+  "唯一的出路，是摧毀設施核心。",
+];
+const INTRO_DISPLAY_MS = 4000; // 本次派工規格：約 4 秒
+const INTRO_FADE_MS = 500;
+
+/**
+ * 開場文字畫面（M3 第三階段新增）：從主選單點擊進入後、控制權交給玩家前顯示，黑底漸入漸出，
+ * 約 4 秒後自動完成，可按任意鍵跳過。main.ts 只在「新局開始」（含首次進入與暫停選單「重新
+ * 開始」，兩者皆會先完整重建關卡狀態）呼叫 show()，死亡自動重生路徑不呼叫（本次派工規格：
+ * 「重生不重播；重新開始重播」）。show() 呼叫期間 game/state.ts 的狀態仍維持在呼叫前的狀態
+ * （menu 或 paused），直到 onComplete 回呼才由呼叫端轉入 playing，確保「控制權交給玩家前」
+ * 玩家無法移動或開火（沿用主迴圈既有的 `gameState.state === "playing"` 狀態閘）。
+ */
+export class IntroScreen {
+  private readonly root: HTMLDivElement;
+  private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private fadeOutHandle: ReturnType<typeof setTimeout> | null = null;
+  private keyHandler: (() => void) | null = null;
+  private onCompleteCb: (() => void) | null = null;
+
+  constructor(container: HTMLElement = document.body) {
+    this.root = document.createElement("div");
+    this.root.id = "p96-intro-overlay";
+    Object.assign(this.root.style, {
+      position: "fixed",
+      inset: "0",
+      display: "none",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "#08090B",
+      color: COLOR_TEXT,
+      zIndex: "22", // 低於 PauseMenu(26)／SettingsPanel(27)／WinScreen(28)，高於一般 HUD
+      opacity: "0",
+      transition: `opacity ${INTRO_FADE_MS}ms ease`,
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      textAlign: "center",
+      cursor: "pointer",
+      userSelect: "none",
+    });
+
+    const textEl = document.createElement("div");
+    textEl.dataset["role"] = "intro-text";
+    textEl.textContent = INTRO_LINES.join("\n");
+    Object.assign(textEl.style, {
+      fontSize: "clamp(16px, 2.4vw, 22px)",
+      lineHeight: "2.2",
+      letterSpacing: "0.06em",
+      color: COLOR_TEXT,
+      opacity: "0.92",
+      maxWidth: "780px",
+      padding: "0 24px",
+      whiteSpace: "pre-line",
+    });
+    this.root.appendChild(textEl);
+    container.appendChild(this.root);
+
+    this.root.addEventListener("click", () => this.finish());
+  }
+
+  /** 顯示開場文字並於完成（時間到或使用者跳過）後呼叫 onComplete 一次。 */
+  show(onComplete: () => void): void {
+    this.onCompleteCb = onComplete;
+    this.root.style.display = "flex";
+    // 強制 reflow 後再設 opacity，確保 CSS transition 生效（標準 fade-in 寫法）。
+    void this.root.offsetWidth;
+    this.root.style.opacity = "1";
+
+    this.keyHandler = () => this.finish();
+    window.addEventListener("keydown", this.keyHandler, { once: true });
+    this.timeoutHandle = setTimeout(() => this.finish(), INTRO_DISPLAY_MS);
+  }
+
+  private finish(): void {
+    if (this.timeoutHandle !== null) {
+      clearTimeout(this.timeoutHandle);
+      this.timeoutHandle = null;
+    }
+    if (this.keyHandler) {
+      window.removeEventListener("keydown", this.keyHandler);
+      this.keyHandler = null;
+    }
+    if (this.onCompleteCb === null) return; // 已完成過（例如先跳過又剛好逾時），避免重複觸發。
+    this.root.style.opacity = "0";
+    const cb = this.onCompleteCb;
+    this.onCompleteCb = null;
+    this.fadeOutHandle = setTimeout(() => {
+      this.root.style.display = "none";
+      this.fadeOutHandle = null;
+      cb();
+    }, INTRO_FADE_MS);
+  }
+}
+
 /** 暫停選單：playing → paused 時顯示（見 main.ts 的 gameState.onChange 驅動）。 */
 export class PauseMenu {
   private readonly root: HTMLDivElement;
@@ -280,9 +378,14 @@ export class SettingsPanel {
   }
 }
 
+/** 真結局結尾文字（PLAN §4.4：三行，繁體全形標點，極簡；M3 第三階段取代原「垂直切片完成」
+ *  的臨時通關畫面）。 */
+const ENDING_LINES: readonly string[] = ["核心停止運轉，警報聲漸漸止息。", "生物機械體失去驅動，倒伏於黑暗之中。", "任務完成，你活著走出了這座設施。"];
+
 /**
- * 通關畫面（M2 新增）：playing → complete（見 game/state.ts）進入終點觸發區時顯示，
- * 呈現通關時間與擊殺數，唯一動作是「回主選單」（走 state machine 的 restart 流程，
+ * 結局畫面（M2 新增，M3 第三階段改為真結局）：playing → complete（見 game/state.ts）於首領死亡
+ * 觸發（取代已移除的暫時終點 endTrigger，見 procgen/level/level.ts 與 main.ts），呈現三行結尾
+ * 敘事文字、通關時間與擊殺數，唯一動作是「回主選單」（走 state machine 的 restart 流程，
  * 由 main.ts 負責重建關卡狀態，回到 menu 重新開始完整流程，本次派工規格）。
  */
 export class WinScreen {
@@ -309,12 +412,24 @@ export class WinScreen {
     });
 
     const title = document.createElement("div");
-    title.textContent = "垂直切片完成";
+    title.textContent = "設施靜默";
     Object.assign(title.style, {
       fontSize: "clamp(26px, 5vw, 42px)",
       fontWeight: "700",
       color: COLOR_ACCENT,
       textShadow: `0 0 24px ${COLOR_ACCENT}`,
+    });
+
+    const narrativeEl = document.createElement("div");
+    narrativeEl.dataset["role"] = "win-narrative";
+    narrativeEl.textContent = ENDING_LINES.join("\n");
+    Object.assign(narrativeEl.style, {
+      fontSize: "15px",
+      color: COLOR_TEXT,
+      opacity: "0.85",
+      lineHeight: "2",
+      whiteSpace: "pre-line",
+      maxWidth: "560px",
     });
 
     this.statsEl = document.createElement("div");
@@ -326,6 +441,7 @@ export class WinScreen {
     menuBtn.addEventListener("click", () => this.onReturnToMenuCb?.());
 
     this.root.appendChild(title);
+    this.root.appendChild(narrativeEl);
     this.root.appendChild(this.statsEl);
     this.root.appendChild(menuBtn);
     container.appendChild(this.root);

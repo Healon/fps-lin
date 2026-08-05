@@ -37,6 +37,7 @@ test("M2 戰鬥流程：擊殺區域 B 的 3 隻巡行體、玩家死亡與重�
 
   // 進入 playing 狀態。
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 撿取前赤手空拳：ammo() 回 0，直接 grantWeapon 裝備脈衝手槍（等效走到台座撿取）。

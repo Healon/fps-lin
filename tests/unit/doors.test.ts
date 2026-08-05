@@ -113,6 +113,52 @@ test("area-clear:E 條件：未清空時鎖定，清空後可觸發滑開（M3 �
   assert.equal(sys.get("door-e")!.status, "opening", "區域 E 清空後應開始滑開");
 });
 
+test("none 條件：恆真，玩家靠近即開（M3 第三階段新增，首領戰大門）", () => {
+  const doorF = makeDoor("door-f", "none", { x: 98, y: 0, z: -10 });
+  const sys = new DoorSystem([doorF]);
+  const playerPos = { x: 98, y: 0, z: -9 }; // 距門 1m，在 2m 觸發半徑內
+  sys.update(1 / 60, NEUTRAL_CTX, playerPos);
+  assert.equal(sys.get("door-f")!.status, "opening", "none 條件應恆真，走近即開");
+});
+
+test("lock：永久鎖定門，強制回到 closed 且此後 update() 完全不再評估（不論條件或距離）", () => {
+  const doorF = makeDoor("door-f", "none", { x: 98, y: 0, z: -10 });
+  const sys = new DoorSystem([doorF]);
+  const nearPos = { x: 98, y: 0, z: -9 };
+
+  // 先讓門開啟。
+  for (let i = 0; i < Math.ceil(DOOR_SLIDE_DURATION * 60) + 5; i++) sys.update(1 / 60, NEUTRAL_CTX, nearPos);
+  assert.equal(sys.get("door-f")!.status, "open");
+
+  sys.lock("door-f");
+  assert.equal(sys.get("door-f")!.status, "closed", "lock() 應立即強制回到 closed");
+  assert.equal(sys.get("door-f")!.progress, 0);
+  assert.equal(sys.activeColliders().length, 1, "鎖定後碰撞體應恢復生效");
+
+  // 此後即使玩家持續在觸發半徑內、條件恆真，門也不應再開啟（永久鎖定）。
+  for (let i = 0; i < 200; i++) sys.update(1 / 60, NEUTRAL_CTX, nearPos);
+  assert.equal(sys.get("door-f")!.status, "closed", "鎖定後不應再滑開");
+  assert.equal(sys.get("door-f")!.progress, 0);
+});
+
+test("lock：查無此門 id 時無動作，不拋錯", () => {
+  const doorA = makeDoor("door-a", "has-weapon", { x: 0, y: 0, z: -4 });
+  const sys = new DoorSystem([doorA]);
+  assert.doesNotThrow(() => sys.lock("door-nonexistent"));
+});
+
+test("reset：連 locked 門也回到 closed／progress=0 且解除鎖定（供死亡重生／重新開始使用）", () => {
+  const doorF = makeDoor("door-f", "none", { x: 98, y: 0, z: -10 });
+  const sys = new DoorSystem([doorF]);
+  sys.lock("door-f");
+  sys.reset();
+  assert.equal(sys.get("door-f")!.status, "closed");
+  assert.equal(sys.get("door-f")!.progress, 0);
+  // 解除鎖定後應可再次正常開啟（none 條件恆真，走近即開）。
+  sys.update(1 / 60, NEUTRAL_CTX, { x: 98, y: 0, z: -9 });
+  assert.equal(sys.get("door-f")!.status, "opening", "reset 後應解除 locked，可再次正常評估");
+});
+
 test("reset：所有門回到 closed／progress=0", () => {
   const doorA = makeDoor("door-a", "has-weapon", { x: 0, y: 0, z: -4 });
   const sys = new DoorSystem([doorA]);

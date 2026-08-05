@@ -5,7 +5,7 @@
 import { test, expect } from "@playwright/test";
 // window.__p96 型別宣告見 src/types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效）。
 
-test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 門 B 開 → 撿散射槍觸發伏擊 → 清 C → door-c 開 → 區域 D → 啟動控制台 → door-d 開 → 通關畫面", async ({ page }) => {
+test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 門 B 開 → 撿散射槍觸發伏擊 → 清 C → door-c 開 → 區域 D → 啟動控制台 → door-d 開 → 區域 E → 清空 → door-e 開 → 區域 F 前廳 → 撿能量砲 → door-f 開 → 跨入首領大廳（鎖門）→ 擊殺首領 → 真結局", async ({ page }) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on("console", (msg) => {
@@ -16,6 +16,7 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 出生：赤手空拳，門 A 鎖定。
@@ -82,12 +83,33 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 85, y: 0, z: -10 }));
   await page.waitForFunction(() => window.__p96!.debug.doorState("door-e") === "open", undefined, { timeout: 3_000 });
 
-  // 走入終點觸發區：通關畫面出現，含通關時間與擊殺數。
-  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 88, y: 0, z: -10 }));
-  await page.waitForFunction(() => window.__p96?.gameState === "complete", undefined, { timeout: 3_000 });
+  // M3 第三階段：區域 F 前廳（能量砲台座、彈藥醫療補給站）。撿能量砲。
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 90, y: 0, z: -10 }));
+  await page.evaluate(() => window.__p96!.debug.grantWeapon("cannon"));
+  expect(await page.evaluate(() => window.__p96!.currentWeapon())).toBe("cannon");
+  expect(await page.evaluate(() => window.__p96!.ammo())).toBe(12);
+
+  // door-f（首領戰大門）：無條件，走近即開。
+  expect(await page.evaluate(() => window.__p96!.debug.doorState("door-f"))).toBe("closed");
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 96.5, y: 0, z: -10 }));
+  await page.waitForFunction(() => window.__p96!.debug.doorState("door-f") === "open", undefined, { timeout: 3_000 });
+
+  // 跨入首領大廳：門立即永久鎖住（locked），首領啟動，HUD 首領血條可讀（bossTransform 非 inactive）。
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 105, y: 0, z: -10 }));
+  await page.waitForFunction(() => window.__p96!.debug.doorState("door-f") === "locked", undefined, { timeout: 3_000 });
+  expect(await page.evaluate(() => window.__p96!.bossAlive())).toBe(true);
+  await page.waitForFunction(() => window.__p96!.debug.bossTransform().state !== "inactive", undefined, { timeout: 3_000 });
+
+  // 擊殺首領（debug 壓 HP 至 0，等效戰勝，跳過完整戰鬥磨耗——首領戰鬥細節另由
+  // tests/playwright/m3-boss.spec.ts 覆蓋）：核心過載序列播完（約 2 秒）後應進入真結局。
+  await page.evaluate(() => window.__p96!.debug.setBossHp(0));
+  expect(await page.evaluate(() => window.__p96!.bossAlive())).toBe(false);
+  await page.waitForFunction(() => window.__p96?.gameState === "complete", undefined, { timeout: 5_000 });
 
   const winPanel = page.locator("#p96-win-overlay");
   await expect(winPanel).toBeVisible();
+  const narrativeText = await page.locator('[data-role="win-narrative"]').textContent();
+  expect(narrativeText).toContain("任務完成");
   const statsText = await page.locator('[data-role="win-stats"]').textContent();
   expect(statsText).toContain("擊殺數");
   expect(statsText).toContain("通關時間");
@@ -106,6 +128,7 @@ test("(b) 門 B 在區域 B 未清前保持關閉：走近不開，collider 仍�
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 不清區域 B，直接靠近門 B 並面向它。

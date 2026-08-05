@@ -19,7 +19,11 @@ const WEAPON_LABEL: Readonly<Record<string, string>> = {
   pistol: "脈衝手槍",
   shotgun: "散射槍",
   plasma: "電漿步槍",
+  cannon: "能量砲",
 };
+
+/** M3 第三階段新增：警示橘（PLAN §5.1 #FF5A26），首領血量條前景色。 */
+const COLOR_BOSS_HP = "#FF5A26";
 
 export class Hud {
   private readonly hpValueEl: HTMLDivElement;
@@ -32,6 +36,14 @@ export class Hud {
   private readonly toastEl: HTMLDivElement;
   private readonly hintEl: HTMLDivElement;
   private toastRemaining = 0;
+  // M3 第三階段新增：首領血量條（頂部）、能量砲充能條、全場脈衝震波 telegraph 紅光疊圖。
+  private readonly bossPanelEl: HTMLDivElement;
+  private readonly bossNameEl: HTMLDivElement;
+  private readonly bossHpFillEl: HTMLDivElement;
+  private readonly cannonChargeEl: HTMLDivElement;
+  private readonly cannonChargeFillEl: HTMLDivElement;
+  private readonly shockwaveTelegraphEl: HTMLDivElement;
+  private readonly coreOverloadEl: HTMLDivElement;
 
   constructor(container: HTMLElement = document.body) {
     const hpPanel = this.buildCornerPanel("left");
@@ -159,12 +171,113 @@ export class Hud {
     this.deathPanelEl.appendChild(deathTitle);
     this.deathPanelEl.appendChild(this.deathMessageEl);
 
+    // 首領血量條（頂部，M3 第三階段新增）：進入區域 F 首領戰時顯示（見 showBossHealth）。
+    this.bossPanelEl = document.createElement("div");
+    this.bossPanelEl.dataset["role"] = "boss-health-panel";
+    Object.assign(this.bossPanelEl.style, {
+      position: "fixed",
+      top: "18px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "min(560px, 70vw)",
+      display: "none",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: "4px",
+      zIndex: "12",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+    });
+    this.bossNameEl = document.createElement("div");
+    this.bossNameEl.dataset["role"] = "boss-name";
+    Object.assign(this.bossNameEl.style, {
+      fontSize: "13px",
+      letterSpacing: "0.16em",
+      color: COLOR_BOSS_HP,
+      textShadow: `0 0 12px ${COLOR_BOSS_HP}`,
+    });
+    const bossHpTrack = document.createElement("div");
+    Object.assign(bossHpTrack.style, {
+      width: "100%",
+      height: "10px",
+      background: COLOR_PANEL,
+      border: `1px solid ${COLOR_BOSS_HP}`,
+      borderRadius: "3px",
+      overflow: "hidden",
+    });
+    this.bossHpFillEl = document.createElement("div");
+    this.bossHpFillEl.dataset["role"] = "boss-hp-fill";
+    Object.assign(this.bossHpFillEl.style, {
+      width: "100%",
+      height: "100%",
+      background: COLOR_BOSS_HP,
+      transition: "width 120ms ease-out",
+    });
+    bossHpTrack.appendChild(this.bossHpFillEl);
+    this.bossPanelEl.appendChild(this.bossNameEl);
+    this.bossPanelEl.appendChild(bossHpTrack);
+
+    // 能量砲充能條（M3 第三階段新增）：充能中顯示於準星下方（見 updateCannonCharge）。
+    this.cannonChargeEl = document.createElement("div");
+    this.cannonChargeEl.dataset["role"] = "cannon-charge-panel";
+    Object.assign(this.cannonChargeEl.style, {
+      position: "fixed",
+      top: "58%",
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "160px",
+      height: "8px",
+      display: "none",
+      background: COLOR_PANEL,
+      border: `1px solid ${COLOR_AMMO}`,
+      borderRadius: "3px",
+      overflow: "hidden",
+      zIndex: "12",
+    });
+    this.cannonChargeFillEl = document.createElement("div");
+    this.cannonChargeFillEl.dataset["role"] = "cannon-charge-fill";
+    Object.assign(this.cannonChargeFillEl.style, {
+      width: "0%",
+      height: "100%",
+      background: COLOR_AMMO,
+    });
+    this.cannonChargeEl.appendChild(this.cannonChargeFillEl);
+
+    // 全場脈衝震波 telegraph 紅光疊圖（M3 第三階段新增，同 hurtVignetteEl 慣例但獨立元素，
+    // 避免與受傷紅暈的計時邏輯互相覆蓋）。
+    this.shockwaveTelegraphEl = document.createElement("div");
+    this.shockwaveTelegraphEl.dataset["role"] = "boss-shockwave-telegraph";
+    Object.assign(this.shockwaveTelegraphEl.style, {
+      position: "fixed",
+      inset: "0",
+      pointerEvents: "none",
+      zIndex: "16",
+      background: "radial-gradient(ellipse at center, rgba(255,90,38,0) 40%, rgba(255,90,38,0.6) 100%)",
+      opacity: "0",
+    });
+
+    // 核心過載閃白（M3 第三階段新增，PLAN §4.4：「首領溶解加全場閃白漸強約 2 秒」）：
+    // 獨立於受傷紅暈與震波紅光，白色徑向疊圖，main.ts 於首領死亡後的結尾序列期間驅動。
+    this.coreOverloadEl = document.createElement("div");
+    this.coreOverloadEl.dataset["role"] = "core-overload-flash";
+    Object.assign(this.coreOverloadEl.style, {
+      position: "fixed",
+      inset: "0",
+      pointerEvents: "none",
+      zIndex: "17",
+      background: "radial-gradient(ellipse at center, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.4) 100%)",
+      opacity: "0",
+    });
+
     container.appendChild(hpPanel);
     container.appendChild(ammoPanel);
     container.appendChild(this.vignetteEl);
     container.appendChild(this.hurtVignetteEl);
+    container.appendChild(this.shockwaveTelegraphEl);
+    container.appendChild(this.coreOverloadEl);
     container.appendChild(this.hintEl);
     container.appendChild(this.toastEl);
+    container.appendChild(this.bossPanelEl);
+    container.appendChild(this.cannonChargeEl);
     container.appendChild(this.deathPanelEl);
   }
 
@@ -195,7 +308,7 @@ export class Hud {
   }
 
   /** weaponId 為 null 表示尚未裝備任何武器（區域 A 出生時赤手空拳，撿取前不可開火）。 */
-  updateWeaponName(weaponId: "pistol" | "shotgun" | "plasma" | null): void {
+  updateWeaponName(weaponId: "pistol" | "shotgun" | "plasma" | "cannon" | null): void {
     this.weaponNameEl.textContent = weaponId ? WEAPON_LABEL[weaponId] : "赤手空拳";
   }
 
@@ -236,5 +349,40 @@ export class Hud {
     if (this.toastRemaining <= 0) return;
     this.toastRemaining = Math.max(0, this.toastRemaining - dt);
     if (this.toastRemaining === 0) this.toastEl.style.opacity = "0";
+  }
+
+  // ---- M3 第三階段新增：首領血量條、能量砲充能條、震波 telegraph 紅光 ----
+
+  /** 顯示首領血量條並設定名稱（PLAN §3.4：進入區域 F 首領戰出現，名稱「核心守護者」）。 */
+  showBossHealth(name: string): void {
+    this.bossNameEl.textContent = name;
+    this.bossPanelEl.style.display = "flex";
+  }
+
+  hideBossHealth(): void {
+    this.bossPanelEl.style.display = "none";
+  }
+
+  updateBossHealth(hp: number, maxHp: number): void {
+    const ratio = maxHp > 0 ? Math.max(0, Math.min(1, hp / maxHp)) : 0;
+    this.bossHpFillEl.style.width = `${(ratio * 100).toFixed(2)}%`;
+  }
+
+  /** 能量砲充能條：active=false 時隱藏（未充能或非能量砲），progress 為 0 至 1。 */
+  updateCannonCharge(progress: number, active: boolean): void {
+    this.cannonChargeEl.style.display = active ? "block" : "none";
+    this.cannonChargeFillEl.style.width = `${Math.max(0, Math.min(1, progress)) * 100}%`;
+  }
+
+  /** 全場脈衝震波 telegraph 紅光強度，0（無）至 1（即將引爆）；main.ts 由
+   *  Boss.telegraphIntensity 驅動（見 game/boss.ts）。 */
+  setBossShockwaveTelegraph(intensity: number): void {
+    this.shockwaveTelegraphEl.style.opacity = `${Math.max(0, Math.min(1, intensity))}`;
+  }
+
+  /** 核心過載閃白強度，0（無）至 1（全白）；main.ts 於首領死亡後的真結局序列期間驅動
+   *  （PLAN §4.4：約 2 秒漸強）。 */
+  setCoreOverloadFlash(intensity: number): void {
+    this.coreOverloadEl.style.opacity = `${Math.max(0, Math.min(1, intensity))}`;
   }
 }

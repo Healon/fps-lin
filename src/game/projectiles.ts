@@ -9,7 +9,7 @@
 // 效能：物件池重用（覆寫既有已消滅槽位），避免每幀配置新物件（本次派工規格）。
 
 import type { Vec3 } from "../core/math.ts";
-import { addVec3, normalizeVec3, scaleVec3 } from "../core/math.ts";
+import { addVec3, normalizeVec3, scaleVec3, subVec3, lengthVec3 } from "../core/math.ts";
 import type { Aabb } from "../procgen/level/level.ts";
 import { expandAabb, rayAabbIntersect } from "./collision.ts";
 
@@ -25,6 +25,20 @@ export interface ProjectileSpawnOptions {
   radius: number;
   faction: ProjectileFaction;
   color: readonly [number, number, number];
+  /**
+   * M3 第三階段新增（能量砲）：範圍傷害半徑（公尺），省略或 0 即維持既有「單體命中」行為
+   * （逐位元相容，見 update() 內判斷）。設定後，消滅當下（命中目標或命中牆面皆算，牆面亦會
+   * 引爆）改為對 targetQuery(faction) 回傳清單中，AABB 中心與命中點距離 ≤ splashRadius 的
+   * 每一個目標各自套用一次 applyDamage(damage, dir)，取代原本「只傷最近單一目標」的路徑。
+   */
+  splashRadius?: number;
+  /**
+   * M3 第三階段新增：不透明的呼叫端自訂標籤（例如武器 id），ProjectileSystem 本身不解讀，
+   * 僅原樣保留並於命中事件（ProjectileHitEvent.tag）回傳。用途：main.ts 的 player 陣營投射物
+   * 武器（電漿步槍與能量砲）命中特效／音效不同，但兩者頂點色皆為能源青、無法從外觀區分，
+   * 需要這個標籤才知道是哪把武器命中的（見主迴圈 projectileHits 迴圈）。
+   */
+  tag?: string;
 }
 
 /** 投射物可能命中的目標（Crawler／Spitter／Warden／玩家包裝皆可，結構相容即可，不要求
@@ -45,6 +59,8 @@ export interface ProjectileHitEvent {
   target: ProjectileTarget;
   point: Vec3;
   died: boolean;
+  /** 原樣回傳 spawn 時的 ProjectileSpawnOptions.tag（見該欄位註解），未設定則為 undefined。 */
+  tag?: string;
 }
 
 /** 供渲染端讀取的存活投射物快照（不含已消滅的槽位）。 */
@@ -70,6 +86,11 @@ interface Projectile {
   color: readonly [number, number, number];
   age: number;
   alive: boolean;
+  /** M3 第三階段新增（能量砲濺射），見 ProjectileSpawnOptions.splashRadius；undefined 或 0
+   *  代表沿用既有單體命中路徑。 */
+  splashRadius?: number;
+  /** 見 ProjectileSpawnOptions.tag。 */
+  tag?: string;
 }
 
 export class ProjectileSystem {
@@ -88,6 +109,8 @@ export class ProjectileSystem {
       color: opts.color,
       age: 0,
       alive: true,
+      splashRadius: opts.splashRadius,
+      tag: opts.tag,
     };
     const slot = this.pool.find((p) => !p.alive);
     if (slot) {
@@ -151,18 +174,48 @@ export class ProjectileSystem {
       // 先命中者算：目標交點需早於（或等於）牆面交點才算命中目標，否則視為打牆。
       if (nearestTarget !== null && (nearestWallT === null || nearestTargetT! <= nearestWallT)) {
         const hitPoint = addVec3(p.pos, scaleVec3(p.dir, nearestTargetT!));
-        const died = nearestTarget.applyDamage(p.damage, p.dir);
-        events.push({ faction: p.faction, target: nearestTarget, point: hitPoint, died });
         p.alive = false;
+        if (p.splashRadius && p.splashRadius > 0) {
+          events.push(...this.resolveSplash(p, hitPoint, targetQuery));
+        } else {
+          const died = nearestTarget.applyDamage(p.damage, p.dir);
+          events.push({ faction: p.faction, target: nearestTarget, point: hitPoint, died, tag: p.tag });
+        }
         continue;
       }
 
       if (nearestWallT !== null) {
-        p.alive = false; // 消滅於牆面，不回報命中事件（無 target）。
+        p.alive = false;
+        // 濺射彈命中牆面仍應引爆（同榴彈慣例），對牆面附近目標造成範圍傷害；
+        // 非濺射彈維持既有行為：消滅於牆面，不回報命中事件（無 target）。
+        if (p.splashRadius && p.splashRadius > 0) {
+          const hitPoint = addVec3(p.pos, scaleVec3(p.dir, nearestWallT));
+          events.push(...this.resolveSplash(p, hitPoint, targetQuery));
+        }
         continue;
       }
 
       p.pos = addVec3(p.pos, scaleVec3(p.dir, stepDistance));
+    }
+    return events;
+  }
+
+  /** 範圍傷害引爆（M3 第三階段新增，見 splashRadius 註解）：對 targetQuery(faction) 回傳清單中
+   *  每個 AABB 中心與 impactPoint 距離 ≤ p.splashRadius 的目標各套用一次 applyDamage，
+   *  逐一回傳命中事件（供呼叫端逐一觸發命中回饋／擊殺計數，同一般命中事件慣例）。 */
+  private resolveSplash(p: Projectile, impactPoint: Vec3, targetQuery: ProjectileTargetQuery): ProjectileHitEvent[] {
+    const events: ProjectileHitEvent[] = [];
+    const radius = p.splashRadius ?? 0;
+    for (const target of targetQuery(p.faction)) {
+      const aabb = target.getAabb();
+      const center: Vec3 = {
+        x: (aabb.min.x + aabb.max.x) / 2,
+        y: (aabb.min.y + aabb.max.y) / 2,
+        z: (aabb.min.z + aabb.max.z) / 2,
+      };
+      if (lengthVec3(subVec3(center, impactPoint)) > radius) continue;
+      const died = target.applyDamage(p.damage, p.dir);
+      events.push({ faction: p.faction, target, point: impactPoint, died, tag: p.tag });
     }
     return events;
   }

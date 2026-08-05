@@ -148,4 +148,4 @@ export class PulsePistol {
   }
 }
 
-export type WeaponId = "pistol" | "shotgun" | "plasma";
+export type WeaponId = "pistol" | "shotgun" | "plasma" | "cannon";

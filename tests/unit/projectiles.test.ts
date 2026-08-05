@@ -96,6 +96,49 @@ test("物件池重用：多次 spawn／消滅後，pool 陣列大小不隨呼叫
   assert.equal(sys.aliveCount, 0);
 });
 
+test("M3 第三階段：splashRadius 設定時，命中目標應對範圍內全部目標各造成一次傷害（含被直接命中者），並回報 tag", () => {
+  const sys = new ProjectileSystem();
+  sys.spawn({
+    pos: { x: 0, y: 1, z: 0 },
+    dir: { x: 0, y: 0, z: -1 },
+    speed: 10,
+    damage: 80,
+    radius: 0.3,
+    faction: "player",
+    color: [0.35, 0.88, 1],
+    splashRadius: 2.5,
+    tag: "cannon",
+  });
+  const near = makeTarget({ min: { x: -0.4, y: 0, z: -1 }, max: { x: 0.4, y: 2, z: -0.9 } }, 100); // 直接命中路徑上
+  const farInRadius = makeTarget({ min: { x: 1.5, y: 0, z: -1 }, max: { x: 2.3, y: 2, z: -0.9 } }, 100); // 命中點附近，範圍內
+  const outOfRadius = makeTarget({ min: { x: 10, y: 0, z: -1 }, max: { x: 10.8, y: 2, z: -0.9 } }, 100); // 範圍外
+  const events = sys.update(1, [], (faction) => (faction === "player" ? [near, farInRadius, outOfRadius] : []));
+  assert.equal(near.hp, 20, "直接命中者應受濺射傷害");
+  assert.equal(farInRadius.hp, 20, "範圍內鄰近目標應受濺射傷害");
+  assert.equal(outOfRadius.hp, 100, "範圍外目標不應受傷害");
+  assert.equal(events.length, 2);
+  assert.ok(events.every((e) => e.tag === "cannon"));
+});
+
+test("splashRadius 設定時，命中牆面（無直接命中目標）仍應引爆並對範圍內目標造成傷害", () => {
+  const sys = new ProjectileSystem();
+  sys.spawn({
+    pos: { x: 0, y: 1, z: 0 },
+    dir: { x: 0, y: 0, z: -1 },
+    speed: 10,
+    damage: 80,
+    radius: 0.3,
+    faction: "player",
+    color: [0.35, 0.88, 1],
+    splashRadius: 2.5,
+  });
+  const wall: Aabb = { min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 2, z: -0.5 } };
+  const nearby = makeTarget({ min: { x: 1, y: 0, z: -1 }, max: { x: 1.8, y: 2, z: -0.5 } }, 100);
+  const events = sys.update(1, [wall], (faction) => (faction === "player" ? [nearby] : []));
+  assert.equal(events.length, 1);
+  assert.equal(nearby.hp, 20, "命中牆面仍應引爆濺射傷害");
+});
+
 test("同時多發存活：instances 回報全部存活投射物", () => {
   const sys = new ProjectileSystem();
   sys.spawn({ pos: { x: 0, y: 1, z: 0 }, dir: { x: 0, y: 0, z: -1 }, speed: 5, damage: 8, radius: 0.3, faction: "enemy", color: [1, 0.4, 0.15] });

@@ -17,6 +17,7 @@ test("(a) 射擊體會打傷玩家：teleport 至區域 D 視線內站定，等�
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // spittersAlive() 為全域計數（區域 D 3 隻加區域 E 2 隻，兩者同時於出生時全數生成，
@@ -48,6 +49,7 @@ test("(b) E 鍵可啟動控制台（真實輸入路徑，非 debug 後門）：�
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 走近控制台（距 1m，在 1.5m 提示半徑內），按 E 啟動（真實鍵盤事件，經 core/input.ts
@@ -76,6 +78,7 @@ test("(c) 正面打守衛體傷害減半：脈衝手槍命中面向自己的守�
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   await page.evaluate(() => window.__p96!.debug.grantWeapon("pistol"));
@@ -118,6 +121,7 @@ test("(d) 電漿步槍：數字鍵 3 切換（真實輸入路徑）、按住連�
   await page.goto("/");
   await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
   await page.locator("#p96-start-overlay").click();
+  await page.keyboard.press("Enter"); // 跳過開場文字（M3 第三階段新增，見 ui/menu.ts IntroScreen：任意鍵跳過）
   await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
 
   // 略過走位，直接給予電漿步槍（等效走到台座撿取，同 grantWeapon 慣例）；再手動切回

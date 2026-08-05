@@ -18,11 +18,14 @@ declare global {
       spittersAlive: () => number;
       /** 存活守衛體數（M3 第二階段新增，同 enemiesAlive 慣例）。 */
       wardensAlive: () => number;
+      /** 首領是否存活（M3 第三階段新增，state !== "dead"，涵蓋尚未啟動戰鬥的 inactive）。 */
+      bossAlive: () => boolean;
       playerHp: () => number;
       /** 目前武器彈藥數（M2 新增，供 menu 狀態射擊閘門測試驗證彈藥未變化）；未裝備武器時為 0。 */
       ammo: () => number;
-      /** 目前裝備中的武器 id（M2 新增，M3 第二階段擴充 "plasma"），未持有任何武器時為 null。 */
-      currentWeapon: () => "pistol" | "shotgun" | "plasma" | null;
+      /** 目前裝備中的武器 id（M2 新增，M3 第二階段擴充 "plasma"，M3 第三階段擴充 "cannon"），
+       *  未持有任何武器時為 null。 */
+      currentWeapon: () => "pistol" | "shotgun" | "plasma" | "cannon" | null;
       /** 全程累計擊殺數（M2 新增，供通關畫面與驗收讀取）。 */
       kills: () => number;
       /** 程式觸發一次開火，用當前視角；回傳是否真的開火（冷卻中或無彈藥則 false）。
@@ -51,6 +54,13 @@ declare global {
         /** 存活守衛體的位置／面向／狀態／HP（M3 第二階段新增，供驗收截圖取景，並供「正面打
          *  守衛體傷害減半」的測試以 damage 前後 HP 差比較驗證方向性減傷）。 */
         wardenTransforms: () => { x: number; y: number; z: number; yaw: number; state: string; hp: number }[];
+        /** 首領目前位置／面向／狀態／HP（M3 第三階段新增，供驗收截圖取景與測試斷言）。 */
+        bossTransform: () => { x: number; y: number; z: number; yaw: number; state: string; hp: number };
+        /** 直接設定首領 HP（M3 第三階段新增，供測試壓 HP 門檻觸發加壓，或直接壓至 0 快速通關），
+         *  略過 inactive 防呆與方向性減傷判定。 */
+        setBossHp: (hp: number) => void;
+        /** 目前能量砲充能進度 0 至 1（M3 第三階段新增）。 */
+        cannonChargeProgress: () => number;
         /** 直接切換遊戲狀態，測試用，繞過正常轉移路徑（M2 新增，見 game/state.ts）。 */
         setState: (state: GameState) => void;
         /** 目前套用中的設定（M2 新增，供 reload 後驗收設定是否讀回一致）。 */
@@ -58,16 +68,18 @@ declare global {
         /** renderer 目前實際套用的 FOV（度），與 getSettings().fov 分開驗證「真的套用到渲染」。 */
         getFov: () => number;
         /** 直接給予武器（跳過走到台座撿取），等效於實際撿取（含自動裝備／觸發區域 C 伏擊），
-         *  供 Playwright 劇本跳過長距離走位（M2 新增，M3 第二階段擴充 "plasma"）。 */
-        grantWeapon: (id: "pistol" | "shotgun" | "plasma") => void;
+         *  供 Playwright 劇本跳過長距離走位（M2 新增，M3 第二階段擴充 "plasma"，M3 第三階段
+         *  擴充 "cannon"）。 */
+        grantWeapon: (id: "pistol" | "shotgun" | "plasma" | "cannon") => void;
         /** 直接清空指定區域全部存活敵人（等效瞬間擊殺，供測試跳過戰鬥磨耗，M2 新增；
          *  M3 擴充涵蓋區域 D 的射擊體；M3 第二階段擴充涵蓋區域 E 的巡行體加射擊體加守衛體）。 */
         clearArea: (area: "B" | "C" | "D" | "E") => void;
-        /** 查詢指定門目前狀態（M2 新增），查無此門則回傳 undefined。 */
-        doorState: (doorId: string) => "closed" | "opening" | "open" | undefined;
+        /** 查詢指定門目前狀態（M2 新增），查無此門則回傳 undefined；"locked"（M3 第三階段新增）
+         *  為首領戰大門一旦鎖住即永久回報的狀態，不會再變回 "closed"／"opening"／"open"。 */
+        doorState: (doorId: string) => "closed" | "opening" | "open" | "locked" | undefined;
         /** 強制啟動區域 D 控制台，略過走近距離（M3 新增，同 grantWeapon／clearArea 慣例）。 */
         activateConsole: () => void;
-        /** 直接傳送玩家並瞬間觸發通關（等效走進終點觸發區，供測試跳過完整戰鬥流程，M2 新增）。 */
+        /** 直接觸發結局畫面（等效首領死亡並播完核心過載序列，供測試跳過完整首領戰，M2 新增）。 */
         forceComplete: () => void;
         /** 目前音樂邏輯狀態（M2 第三階段新增，見 audio/music.ts）：'off' 為尚未啟動或已停止，
          *  'explore'／'combat' 為雙態音樂系統目前所在的附加層（3 秒滯後才回 explore）。 */

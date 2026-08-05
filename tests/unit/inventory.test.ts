@@ -57,6 +57,26 @@ test("addAmmo：彈藥加值封頂於彈藥上限，不溢出", () => {
   assert.equal(inv.pistol.ammo, PULSE_PISTOL_MAGAZINE);
 });
 
+test("give('cannon')：擁有並自動裝備，彈藥回報上限（M3 第三階段新增）", () => {
+  const inv = new WeaponInventory();
+  assert.equal(inv.give("cannon"), true);
+  assert.equal(inv.owns("cannon"), true);
+  assert.equal(inv.current, "cannon");
+  assert.equal(inv.ammo(), 12);
+  assert.equal(inv.ownsAny(), true);
+});
+
+test("switchTo：離開能量砲時應中止其進行中的充能（不殘留，M3 第三階段新增）", () => {
+  const inv = new WeaponInventory();
+  inv.give("pistol");
+  inv.give("cannon"); // 自動切到 cannon
+  inv.cannon.chargeTick(0.5);
+  assert.equal(inv.cannon.isCharging, true);
+  inv.switchTo("pistol");
+  assert.equal(inv.cannon.isCharging, false, "切離能量砲應中止充能");
+  assert.equal(inv.cannon.chargeProgress, 0);
+});
+
 test("reset：清空擁有狀態與裝備，回到赤手空拳", () => {
   const inv = new WeaponInventory();
   inv.give("pistol");
