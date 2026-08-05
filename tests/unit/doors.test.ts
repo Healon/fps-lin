@@ -15,7 +15,7 @@ function makeDoor(id: string, condition: DoorDef["condition"], pos = { x: 0, y: 
   };
 }
 
-const NEUTRAL_CTX = { hasWeapon: false, areaClearB: false, areaClearC: false, consoleActivated: false };
+const NEUTRAL_CTX = { hasWeapon: false, areaClearB: false, areaClearC: false, consoleActivated: false, areaClearE: false };
 
 test("初始狀態：所有門 closed，progress=0，碰撞體皆計入 active colliders", () => {
   const doorA = makeDoor("door-a", "has-weapon");
@@ -99,6 +99,18 @@ test("console-activated 條件：未啟動時鎖定，啟動後可觸發滑開�
 
   sys.update(1 / 60, { ...NEUTRAL_CTX, consoleActivated: true }, playerPos);
   assert.equal(sys.get("door-d")!.status, "opening", "控制台啟動後應開始滑開");
+});
+
+test("area-clear:E 條件：未清空時鎖定，清空後可觸發滑開（M3 第二階段新增）", () => {
+  const doorE = makeDoor("door-e", "area-clear:E", { x: 86, y: 0, z: -10 });
+  const sys = new DoorSystem([doorE]);
+  const playerPos = { x: 86, y: 0, z: -9 }; // 距門 1m，在 2m 觸發半徑內
+
+  sys.update(1 / 60, NEUTRAL_CTX, playerPos);
+  assert.equal(sys.get("door-e")!.status, "closed", "區域 E 未清空前應鎖定");
+
+  sys.update(1 / 60, { ...NEUTRAL_CTX, areaClearE: true }, playerPos);
+  assert.equal(sys.get("door-e")!.status, "opening", "區域 E 清空後應開始滑開");
 });
 
 test("reset：所有門回到 closed／progress=0", () => {

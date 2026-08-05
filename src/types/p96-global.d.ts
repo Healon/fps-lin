@@ -16,11 +16,13 @@ declare global {
       enemiesAlive: () => number;
       /** 存活射擊體數（M3 新增，同 enemiesAlive 慣例）。 */
       spittersAlive: () => number;
+      /** 存活守衛體數（M3 第二階段新增，同 enemiesAlive 慣例）。 */
+      wardensAlive: () => number;
       playerHp: () => number;
       /** 目前武器彈藥數（M2 新增，供 menu 狀態射擊閘門測試驗證彈藥未變化）；未裝備武器時為 0。 */
       ammo: () => number;
-      /** 目前裝備中的武器 id（M2 新增），未持有任何武器時為 null。 */
-      currentWeapon: () => "pistol" | "shotgun" | null;
+      /** 目前裝備中的武器 id（M2 新增，M3 第二階段擴充 "plasma"），未持有任何武器時為 null。 */
+      currentWeapon: () => "pistol" | "shotgun" | "plasma" | null;
       /** 全程累計擊殺數（M2 新增，供通關畫面與驗收讀取）。 */
       kills: () => number;
       /** 程式觸發一次開火，用當前視角；回傳是否真的開火（冷卻中或無彈藥則 false）。
@@ -43,8 +45,12 @@ declare global {
         pickupsRemaining: () => { kind: string; pos: { x: number; y: number; z: number } }[];
         /** 把視角對準任意世界座標點（不限敵人），供驗收截圖取景使用。 */
         lookAt: (target: { x: number; y: number; z: number }) => void;
-        /** 回傳目前存活（含 hurt／retreat／chase 等，排除 dead）敵人的位置與朝向，供驗收截圖取景使用。 */
-        enemyTransforms: () => { x: number; y: number; z: number; yaw: number; state: string }[];
+        /** 回傳目前存活（含 hurt／retreat／chase 等，排除 dead）敵人的位置與朝向，供驗收截圖取景使用。
+         *  area（M3 第二階段新增）供測試依區域篩選（可能為 undefined，見 EnemySpawnDef.area）。 */
+        enemyTransforms: () => { x: number; y: number; z: number; yaw: number; state: string; area?: string }[];
+        /** 存活守衛體的位置／面向／狀態／HP（M3 第二階段新增，供驗收截圖取景，並供「正面打
+         *  守衛體傷害減半」的測試以 damage 前後 HP 差比較驗證方向性減傷）。 */
+        wardenTransforms: () => { x: number; y: number; z: number; yaw: number; state: string; hp: number }[];
         /** 直接切換遊戲狀態，測試用，繞過正常轉移路徑（M2 新增，見 game/state.ts）。 */
         setState: (state: GameState) => void;
         /** 目前套用中的設定（M2 新增，供 reload 後驗收設定是否讀回一致）。 */
@@ -52,11 +58,11 @@ declare global {
         /** renderer 目前實際套用的 FOV（度），與 getSettings().fov 分開驗證「真的套用到渲染」。 */
         getFov: () => number;
         /** 直接給予武器（跳過走到台座撿取），等效於實際撿取（含自動裝備／觸發區域 C 伏擊），
-         *  供 Playwright 劇本跳過長距離走位（M2 新增）。 */
-        grantWeapon: (id: "pistol" | "shotgun") => void;
+         *  供 Playwright 劇本跳過長距離走位（M2 新增，M3 第二階段擴充 "plasma"）。 */
+        grantWeapon: (id: "pistol" | "shotgun" | "plasma") => void;
         /** 直接清空指定區域全部存活敵人（等效瞬間擊殺，供測試跳過戰鬥磨耗，M2 新增；
-         *  M3 擴充涵蓋區域 D 的射擊體）。 */
-        clearArea: (area: "B" | "C" | "D") => void;
+         *  M3 擴充涵蓋區域 D 的射擊體；M3 第二階段擴充涵蓋區域 E 的巡行體加射擊體加守衛體）。 */
+        clearArea: (area: "B" | "C" | "D" | "E") => void;
         /** 查詢指定門目前狀態（M2 新增），查無此門則回傳 undefined。 */
         doorState: (doorId: string) => "closed" | "opening" | "open" | undefined;
         /** 強制啟動區域 D 控制台，略過走近距離（M3 新增，同 grantWeapon／clearArea 慣例）。 */

@@ -39,20 +39,30 @@ test("頂點數量可被 stride 與 24（6 面 x 4 頂點）整除", () => {
   assert.equal((level.wallVertices.length / VERTEX_STRIDE) % 24, 0);
 });
 
-test("門：恰好 4 扇（A／B／C／D），條件與朝向符合規格", () => {
+test("門：恰好 5 扇（A／B／C／D／E），條件與朝向符合規格", () => {
   const level = generateLevel();
-  assert.equal(level.doors.length, 4);
+  assert.equal(level.doors.length, 5);
   const byId = Object.fromEntries(level.doors.map((d) => [d.id, d]));
   assert.equal(byId["door-a"].condition, "has-weapon");
   assert.equal(byId["door-b"].condition, "area-clear:B");
   assert.equal(byId["door-c"].condition, "area-clear:C");
   assert.equal(byId["door-d"].condition, "console-activated");
+  assert.equal(byId["door-e"].condition, "area-clear:E");
 });
 
-test("射擊體配置：區域 D 恰好 3 隻，皆標記正確 area", () => {
+test("射擊體配置：區域 D 恰好 3 隻、區域 E 恰好 2 隻，皆標記正確 area", () => {
   const level = generateLevel();
-  assert.equal(level.spitterSpawns.length, 3);
-  assert.ok(level.spitterSpawns.every((s) => s.area === "D"));
+  const d = level.spitterSpawns.filter((s) => s.area === "D");
+  const e = level.spitterSpawns.filter((s) => s.area === "E");
+  assert.equal(d.length, 3);
+  assert.equal(e.length, 2);
+  assert.equal(level.spitterSpawns.length, 5);
+});
+
+test("守衛體配置：區域 E 恰好 1 隻（M3 第二階段新增）", () => {
+  const level = generateLevel();
+  assert.equal(level.wardenSpawns.length, 1);
+  assert.ok(level.wardenSpawns.every((w) => w.area === "E"));
 });
 
 test("控制台：已定義且位於區域 D 範圍內", () => {
@@ -61,21 +71,25 @@ test("控制台：已定義且位於區域 D 範圍內", () => {
   assert.ok(level.consoleDef.pos.x > 48 && level.consoleDef.pos.x < 62);
 });
 
-test("撿取物：手槍與散射槍各一，彈藥與醫療包依規格數量", () => {
+test("撿取物：手槍／散射槍／電漿步槍各一，彈藥與醫療包依規格數量", () => {
   const level = generateLevel();
   const byKind = (kind: string) => level.pickups.filter((p) => p.kind === kind);
   assert.equal(byKind("weapon-pistol").length, 1);
   assert.equal(byKind("weapon-shotgun").length, 1);
-  assert.equal(byKind("medkit").length, 2);
-  assert.equal(byKind("ammo-pistol").length + byKind("ammo-shotgun").length, 4);
+  assert.equal(byKind("weapon-plasma").length, 1);
+  assert.equal(byKind("medkit").length, 3);
+  assert.equal(byKind("ammo-pistol").length + byKind("ammo-shotgun").length + byKind("ammo-plasma").length, 6);
+  assert.equal(byKind("ammo-plasma").length, 2);
 });
 
-test("敵人配置：區域 B 3 隻、區域 C 6 隻，皆標記正確 area", () => {
+test("敵人配置：區域 B 3 隻、區域 C 6 隻、區域 E 4 隻，皆標記正確 area", () => {
   const level = generateLevel();
   const b = level.enemySpawns.filter((e) => e.area === "B");
   const c = level.enemySpawns.filter((e) => e.area === "C");
+  const e = level.enemySpawns.filter((en) => en.area === "E");
   assert.equal(b.length, 3);
   assert.equal(c.length, 6);
+  assert.equal(e.length, 4);
 });
 
 test("終點觸發區與玩家出生點皆已定義且落在合理座標範圍內", () => {

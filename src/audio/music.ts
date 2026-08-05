@@ -22,7 +22,7 @@ export type MusicState = "off" | "explore" | "combat";
 const TICK_INTERVAL_MS = 25;
 const LOOKAHEAD_SECONDS = 0.12;
 const MUSIC_BPM = 60; // PLAN §6.5：探索態約 60 BPM 的稀疏感；戰鬥態疊層但不換速度。
-export const HYSTERESIS_SECONDS = 3; // 全部敵人脫離戰鬥狀態後，滯後這麼久才回 explore。
+export const HYSTERESIS_SECONDS = 3; // 保留常數供既有介面相容；2026-08-05 起 combat 為單向（見 stepHysteresis），不再用它退回 explore。
 export const CROSSFADE_SECONDS = 2; // explore／combat 附加層交叉淡入淡出時長。
 
 const MUSIC_BUS_GAIN = 0.5; // 音樂子增益，避免蓋過音效（本次派工規格）。
@@ -134,8 +134,11 @@ export function scheduleWindow(
   return { events, nextStepIndex: idx, nextStepTime: time };
 }
 
-/** explore／combat 附加層的純邏輯狀態機：任一敵人 aggro 立即進 combat 並重置滯後計時；
- *  脫離後滯後 HYSTERESIS_SECONDS 秒才回 explore。純函式，供單元測試驗證滯後行為。 */
+/** explore／combat 附加層的純邏輯狀態機。
+ *  2026-08-05（Lin 實玩回饋「戰鬥音樂希望在遊戲過程中持續，不因敵人消失而沒有音樂」）：
+ *  combat 改為**單向**——任一敵人 aggro 即進 combat，之後敵人清空也不退回 explore；
+ *  只有重新開始（resetToExplore）或回主選單重進（start 重設）才回 explore。
+ *  原滯後 3 秒退回的行為已移除，hysteresisRemaining 欄位保留供介面相容。純函式，供單元測試驗證。 */
 export interface HysteresisState {
   readonly layer: "explore" | "combat";
   readonly hysteresisRemaining: number;
@@ -147,11 +150,7 @@ export function stepHysteresis(state: HysteresisState, anyAggro: boolean, dt: nu
   if (anyAggro) {
     return { layer: "combat", hysteresisRemaining: HYSTERESIS_SECONDS };
   }
-  if (state.layer === "combat") {
-    const remaining = state.hysteresisRemaining - dt;
-    if (remaining <= 0) return { layer: "explore", hysteresisRemaining: 0 };
-    return { layer: "combat", hysteresisRemaining: remaining };
-  }
+  // combat 單向持續：敵人清空不退回（見上方註解與 Lin 回饋）。dt 僅保留簽名相容，不再倒數。
   return state;
 }
 
@@ -337,6 +336,13 @@ export class MusicSystem {
     this.stateForDebug = "explore";
     if (this.exploreLayerGain) this.rampGain(this.exploreLayerGain.gain, 1, CROSSFADE_SECONDS);
     if (this.combatLayerGain) this.rampGain(this.combatLayerGain.gain, 0, CROSSFADE_SECONDS);
+  }
+
+  /** 顯式重置回 explore 層（供「重新開始」使用）。combat 單向化後，restart 若不重置會把
+   *  上一局的戰鬥層帶進新局的甦醒室；start() 只在 started === false 時重跑，故需此路徑。 */
+  resetToExplore(): void {
+    this.hysteresisState = INITIAL_HYSTERESIS_STATE;
+    if (this.started) this.enterExploreLayer();
   }
 
   /** paused↔playing 的音量切換（正常＝MUSIC_BUS_GAIN 音樂子增益，paused＝其 30%），

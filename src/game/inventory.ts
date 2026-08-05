@@ -3,17 +3,21 @@
 // import（shotgun.ts 需要 import weapons.ts 的 raycastScene／HitKind）。
 // main.ts 依 `current` 決定要驅動哪把武器的 update／tryFire；未擁有任何武器時 current 為
 // null（撿取前不可開火，本次派工規格：區域 A 出生時赤手空拳）。
+// M3 第二階段新增電漿步槍（game/plasma.ts）：WeaponId 沿用 weapons.ts 匯出的定義（不重複宣告，
+// 避免兩處字面量聯合型別漂移不同步）。
 
-import { PulsePistol, PULSE_PISTOL_MAGAZINE } from "./weapons.ts";
+import { PulsePistol, PULSE_PISTOL_MAGAZINE, type WeaponId } from "./weapons.ts";
 import { ScatterShotgun, SCATTER_MAGAZINE } from "./shotgun.ts";
+import { PlasmaRifle, PLASMA_RIFLE_MAGAZINE } from "./plasma.ts";
 
-export type WeaponId = "pistol" | "shotgun";
+export type { WeaponId };
 
 export class WeaponInventory {
   readonly pistol = new PulsePistol();
   readonly shotgun = new ScatterShotgun();
+  readonly plasma = new PlasmaRifle();
   private currentId: WeaponId | null = null;
-  private ownedState: Record<WeaponId, boolean> = { pistol: false, shotgun: false };
+  private ownedState: Record<WeaponId, boolean> = { pistol: false, shotgun: false, plasma: false };
 
   get current(): WeaponId | null {
     return this.currentId;
@@ -25,7 +29,7 @@ export class WeaponInventory {
 
   /** 是否已擁有任一武器（供 HUD「尚未持有武器」引導提示判斷）。 */
   ownsAny(): boolean {
-    return this.ownedState.pistol || this.ownedState.shotgun;
+    return this.ownedState.pistol || this.ownedState.shotgun || this.ownedState.plasma;
   }
 
   /** 給予武器（撿取成功時呼叫）：已擁有則回傳 false（不重複觸發）；新武器一律自動裝備上手。 */
@@ -47,6 +51,7 @@ export class WeaponInventory {
   ammo(): number {
     if (this.currentId === "pistol") return this.pistol.ammo;
     if (this.currentId === "shotgun") return this.shotgun.ammo;
+    if (this.currentId === "plasma") return this.plasma.ammo;
     return 0;
   }
 
@@ -54,24 +59,28 @@ export class WeaponInventory {
   magazine(): number {
     if (this.currentId === "pistol") return PULSE_PISTOL_MAGAZINE;
     if (this.currentId === "shotgun") return SCATTER_MAGAZINE;
+    if (this.currentId === "plasma") return PLASMA_RIFLE_MAGAZINE;
     return 0;
   }
 
   addAmmo(id: WeaponId, amount: number): void {
     if (id === "pistol") this.pistol.ammo = Math.min(PULSE_PISTOL_MAGAZINE, this.pistol.ammo + amount);
-    else this.shotgun.ammo = Math.min(SCATTER_MAGAZINE, this.shotgun.ammo + amount);
+    else if (id === "shotgun") this.shotgun.ammo = Math.min(SCATTER_MAGAZINE, this.shotgun.ammo + amount);
+    else this.plasma.ammo = Math.min(PLASMA_RIFLE_MAGAZINE, this.plasma.ammo + amount);
   }
 
   /** 重置為初始狀態：無武器、無裝備（供死亡重生／重新開始使用，關卡從頭來過）。 */
   reset(): void {
     this.pistol.reset();
     this.shotgun.reset();
-    this.ownedState = { pistol: false, shotgun: false };
+    this.plasma.reset();
+    this.ownedState = { pistol: false, shotgun: false, plasma: false };
     this.currentId = null;
   }
 
   update(dt: number): void {
     this.pistol.update(dt);
     this.shotgun.update(dt);
+    this.plasma.update(dt);
   }
 }

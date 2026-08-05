@@ -111,31 +111,20 @@ test("stepHysteresis：aggro 立即轉 combat 並把滯後計時設回 HYSTERESI
   assert.equal(s.hysteresisRemaining, HYSTERESIS_SECONDS);
 });
 
-test("stepHysteresis：脫離 aggro 後在 HYSTERESIS_SECONDS 秒內持續維持 combat（未過滯後不提前切回）", () => {
+test("stepHysteresis 單向（2026-08-05 Lin 回饋）：敵人全滅後 combat 持續不退回，遠超原滯後秒數亦然", () => {
   let s = stepHysteresis(INITIAL_HYSTERESIS_STATE, true, 0);
-  // 累計流逝時間略小於滯後秒數（3 秒），應仍是 combat。
-  const dt = 0.5;
-  const steps = Math.floor((HYSTERESIS_SECONDS - 0.1) / dt);
-  for (let i = 0; i < steps; i++) {
-    s = stepHysteresis(s, false, dt);
-    assert.equal(s.layer, "combat", `第 ${i} 步不應提前切回 explore`);
+  assert.equal(s.layer, "combat");
+  // 敵人清空後推進遠超原本的 3 秒滯後（合計 120 秒），仍應維持 combat。
+  for (let i = 0; i < 240; i++) {
+    s = stepHysteresis(s, false, 0.5);
+    assert.equal(s.layer, "combat", `第 ${i} 步不應退回 explore（combat 為單向）`);
   }
 });
 
-test("stepHysteresis：滯後秒數用盡後準確轉回 explore", () => {
+test("stepHysteresis 單向：combat 期間再次 aggro 仍為 combat（狀態穩定）", () => {
   let s = stepHysteresis(INITIAL_HYSTERESIS_STATE, true, 0);
-  s = stepHysteresis(s, false, HYSTERESIS_SECONDS + 0.001);
-  assert.equal(s.layer, "explore");
-  assert.equal(s.hysteresisRemaining, 0);
-});
-
-test("stepHysteresis：滯後倒數期間再次 aggro 會重置計時（不會提前切回）", () => {
-  let s = stepHysteresis(INITIAL_HYSTERESIS_STATE, true, 0);
-  s = stepHysteresis(s, false, HYSTERESIS_SECONDS - 0.5); // 還剩 0.5 秒就要切回
+  s = stepHysteresis(s, false, 10);
+  s = stepHysteresis(s, true, 0.016);
   assert.equal(s.layer, "combat");
-  s = stepHysteresis(s, true, 0); // 重新 aggro：計時應重置回滿額
   assert.equal(s.hysteresisRemaining, HYSTERESIS_SECONDS);
-  // 若計時真的重置，再流逝略少於 3 秒仍應維持 combat（若沒重置，這裡會提前變 explore）。
-  s = stepHysteresis(s, false, HYSTERESIS_SECONDS - 0.1);
-  assert.equal(s.layer, "combat");
 });

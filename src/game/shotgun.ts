@@ -107,7 +107,7 @@ export class ScatterShotgun {
       let died = false;
       if (hit.hitEnemy) {
         anyEnemyHit = true;
-        died = hit.hitEnemy.applyDamage(SCATTER_PELLET_DAMAGE);
+        died = hit.hitEnemy.applyDamage(SCATTER_PELLET_DAMAGE, dir);
         if (died) anyKill = true;
       }
       return { ...hit, died };

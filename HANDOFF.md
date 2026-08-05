@@ -13,7 +13,7 @@
 - 三態遊戲狀態機（menu／playing／paused）加 complete 通關態；暫停選單；設定系統（靈敏度、音量、FOV，localStorage）。
 - 關卡 A 至 C：甦醒室（空手開局、台座撿手槍）→ L 形走廊 → 維修走廊（3 巡行體）→ 區域清空條件門 → 熔爐大廳（挑高、柱體掩體、散射槍伏擊 6 隻）→ 終點門 → 通關畫面（時間與擊殺數）。
 - 系統：條件滑門（has-weapon／area-clear 加走近觸發）、自動撿取（彈藥／醫療／武器，上限與 toast）、散射槍（6 珠散佈）與武器切換（數字鍵 1 2）、通關統計。
-- 音樂：WebAudio 步進序列器全合成，探索（dark ambient）與戰鬥雙態，aggro 即切換、清空滯後 3 秒淡回；暫停降 30%；經 master volume 統一控制。
+- 音樂：WebAudio 步進序列器全合成，探索（dark ambient）與戰鬥雙態，aggro 即切戰鬥層；**戰鬥層觸發後持續整場（單向，2026-08-05 Lin 裁定），重新開始或回選單才重置**；暫停降 30%；經 master volume 統一控制。
 - 跨瀏覽器：Playwright smoke 於 chromium、webkit、firefox 三引擎全綠，零引擎特調。
 
 ## 驗證與慣例

@@ -385,6 +385,70 @@ export function playConsoleActivate(): void {
   });
 }
 
+// ---- M3 第二階段新增：電漿步槍發射、守衛體衝撞蓄力／撞擊 ----
+
+/** 電漿步槍發射：明亮短促的能量音（三角波高頻下滑加窄頻帶 noise），與脈衝手槍／散射槍／
+ *  射擊體發射聲皆可辨（更亮、更「電」，呼應能源青科技定位）。 */
+export function playPlasmaFire(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "triangle",
+      freqStart: 1800,
+      freqEnd: 500,
+      duration: 0.05,
+      env: { attack: 0.0008, decay: 0.045, peak: 0.4 },
+    });
+    playNoiseVoice(ctx, master, {
+      duration: 0.04,
+      filterType: "highpass",
+      freqStart: 4000,
+      env: { attack: 0.0005, decay: 0.035, peak: 0.25 },
+    });
+  });
+}
+
+/** 守衛體衝撞蓄力（telegraph）：低沉緩慢上滑的鋸齒波低吼，帶「蓄力／威嚇」感，
+ *  與射擊體蓄力聲（高頻電子音）明顯區隔（更低沉、更具重量感）。 */
+export function playWardenChargeWindup(): void {
+  safePlay((ctx, master) => {
+    playOscVoice(ctx, master, {
+      type: "sawtooth",
+      freqStart: 90,
+      freqEnd: 220,
+      duration: 0.46,
+      env: { attack: 0.03, decay: 0.42, peak: 0.5 },
+      filterFreq: 900,
+    });
+    playNoiseVoice(ctx, master, {
+      duration: 0.46,
+      filterType: "lowpass",
+      freqStart: 500,
+      freqEnd: 200,
+      env: { attack: 0.05, decay: 0.4, peak: 0.25 },
+    });
+  });
+}
+
+/** 守衛體衝撞撞擊：厚重低頻撞擊聲（noise 加低頻方波），命中玩家瞬間播放。 */
+export function playWardenChargeImpact(): void {
+  safePlay((ctx, master) => {
+    playNoiseVoice(ctx, master, {
+      duration: 0.18,
+      filterType: "lowpass",
+      freqStart: 900,
+      freqEnd: 150,
+      env: { attack: 0.001, decay: 0.16, peak: 0.65 },
+    });
+    playOscVoice(ctx, master, {
+      type: "square",
+      freqStart: 140,
+      freqEnd: 45,
+      duration: 0.2,
+      env: { attack: 0.001, decay: 0.18, peak: 0.5 },
+    });
+  });
+}
+
 /** 門機械滑動聲：低頻 noise 加緩慢下滑合成器音，機械感。 */
 export function playDoorMove(): void {
   safePlay((ctx, master) => {

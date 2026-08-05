@@ -15,14 +15,17 @@ import { rayAabbIntersect, expandAabb } from "./collision.ts";
 import { playShoot, playHit, playEnemyDie } from "../audio/synth.ts";
 
 /**
- * 任何可被玩家武器擊中的敵人（M3 新增，泛化自原本寫死的 Crawler）：Crawler／Spitter
+ * 任何可被玩家武器擊中的敵人（M3 新增，泛化自原本寫死的 Crawler）：Crawler／Spitter／Warden
  * 結構上皆滿足此介面（state／getAabb()／applyDamage()），供 raycastScene 與
  * ScatterShotgun.tryFire 共用同一套「先命中者算」邏輯，不必為每種敵人各寫一份。
+ * applyDamage 的 hitDirection（M3 第二階段新增，可選）供 Warden 的方向性減傷判定使用
+ * （見 game/warden.ts isFrontHit）；Crawler／Spitter 忽略此參數（結構相容，見 TS 函式參數
+ * 數量的逆變規則：實作方法參數較少時仍可滿足要求更多參數的介面）。
  */
 export interface Shootable {
   state: string;
   getAabb(): Aabb;
-  applyDamage(amount: number): boolean;
+  applyDamage(amount: number, hitDirection?: Vec3): boolean;
 }
 
 export const PULSE_PISTOL_DAMAGE = 12;
@@ -132,7 +135,7 @@ export class PulsePistol {
 
     let died = false;
     if (hitEnemy) {
-      died = hitEnemy.applyDamage(PULSE_PISTOL_DAMAGE);
+      died = hitEnemy.applyDamage(PULSE_PISTOL_DAMAGE, direction);
       this.hitMarkerRemaining = HIT_MARKER_DURATION;
       if (died) {
         playEnemyDie();
@@ -145,4 +148,4 @@ export class PulsePistol {
   }
 }
 
-export type WeaponId = "pistol" | "shotgun";
+export type WeaponId = "pistol" | "shotgun" | "plasma";

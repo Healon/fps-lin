@@ -18,6 +18,8 @@ export interface DoorRuntimeContext {
   areaClearC: boolean;
   /** M3 新增：區域 D 控制台是否已啟動（見 game/console.ts）。 */
   consoleActivated: boolean;
+  /** M3 第二階段新增：區域 E（巡行體加射擊體加守衛體）是否全滅。 */
+  areaClearE: boolean;
 }
 
 export interface DoorRuntimeState {
@@ -39,6 +41,7 @@ export const DOOR_HINT_TEXT: Readonly<Record<DoorOpenCondition, string>> = {
   "area-clear:B": "偵測到生命跡象，門鎖定中",
   "area-clear:C": "偵測到生命跡象，門鎖定中",
   "console-activated": "控制台尚未啟動，門鎖定中",
+  "area-clear:E": "偵測到生命跡象，門鎖定中",
 };
 
 function conditionMet(condition: DoorOpenCondition, ctx: DoorRuntimeContext): boolean {
@@ -51,6 +54,8 @@ function conditionMet(condition: DoorOpenCondition, ctx: DoorRuntimeContext): bo
       return ctx.areaClearC;
     case "console-activated":
       return ctx.consoleActivated;
+    case "area-clear:E":
+      return ctx.areaClearE;
     default:
       return false;
   }

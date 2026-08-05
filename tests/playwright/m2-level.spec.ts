@@ -34,12 +34,20 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   await page.waitForFunction(() => window.__p96!.debug.doorState("door-b") === "open", undefined, { timeout: 3_000 });
 
   // 撿散射槍：觸發伏擊，區域 C 6 隻巡行體出現且直接進 chase（跳過 idle 偵測，direct aggro）。
+  // 區域 E 的 4 隻巡行體自出生即常駐存活（見 main.ts spawnAreaEnemies("E","idle")），
+  // enemiesAlive() 為全域計數，故此處預期值需加上 4（M3 第二階段）。
   await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 35, y: 0, z: -10 }));
   await page.evaluate(() => window.__p96!.debug.grantWeapon("shotgun"));
   expect(await page.evaluate(() => window.__p96!.currentWeapon())).toBe("shotgun");
-  expect(await page.evaluate(() => window.__p96!.enemiesAlive())).toBe(6);
-  const ambushStates = await page.evaluate(() => window.__p96!.debug.enemyTransforms().map((e) => e.state));
-  expect(ambushStates.every((s) => s !== "idle"), `伏擊組應直接進 chase，實際狀態：${ambushStates.join(",")}`).toBe(true);
+  expect(await page.evaluate(() => window.__p96!.enemiesAlive())).toBe(6 + 4);
+  const ambushStates = await page.evaluate(() =>
+    window.__p96!.debug
+      .enemyTransforms()
+      .filter((e) => e.area === "C")
+      .map((e) => e.state),
+  );
+  expect(ambushStates.length).toBe(6);
+  expect(ambushStates.every((s) => s !== "idle"), `伏擊組（區域 C）應直接進 chase，實際狀態：${ambushStates.join(",")}`).toBe(true);
 
   // 清區域 C：door-c 開啟需玩家在 2m 內（door-c 原名 door-end，M3 起改為通往區域 D）。
   await page.evaluate(() => window.__p96!.debug.clearArea("C"));
@@ -47,9 +55,11 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   await page.waitForFunction(() => window.__p96!.debug.doorState("door-c") === "open", undefined, { timeout: 3_000 });
 
   // 走入區域 D：3 隻射擊體出現（不與巡行體共用陣列，見 window.__p96.spittersAlive）；
+  // 區域 E 的 2 隻射擊體與 D 同陣列同時出生（spawnSpitters() 一次生成全部區域），
+  // spittersAlive() 為全域計數，故此處預期值為 3＋2＝5（M3 第二階段）。
   // door-d 尚未解鎖（控制台未啟動，本次派工規格：door-d 只看控制台不要求清敵）。
   await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 55, y: 0, z: -10 }));
-  expect(await page.evaluate(() => window.__p96!.spittersAlive())).toBe(3);
+  expect(await page.evaluate(() => window.__p96!.spittersAlive())).toBe(3 + 2);
   expect(await page.evaluate(() => window.__p96!.debug.doorState("door-d"))).toBe("closed");
 
   // 啟動控制台（debug 後門，略過走近距離）：door-d 走近後應解鎖並滑開。
@@ -57,8 +67,23 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 61, y: 0, z: -10 }));
   await page.waitForFunction(() => window.__p96!.debug.doorState("door-d") === "open", undefined, { timeout: 3_000 });
 
+  // M3 第二階段：走入區域 E 核心通道——4 巡行體＋2 射擊體＋1 守衛體混編（見 procgen/level/level.ts）。
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 70, y: 0, z: -10 }));
+  expect(await page.evaluate(() => window.__p96!.enemiesAlive())).toBe(4); // 區域 B／C 已清空，僅餘區域 E
+  expect(await page.evaluate(() => window.__p96!.spittersAlive())).toBe(3 + 2); // 區域 D 未清（door-d 不要求），加區域 E
+  expect(await page.evaluate(() => window.__p96!.wardensAlive())).toBe(1);
+  expect(await page.evaluate(() => window.__p96!.debug.doorState("door-e"))).toBe("closed");
+
+  // 清區域 E（巡行體加射擊體加守衛體）：door-e 開啟需玩家在 2m 內。
+  await page.evaluate(() => window.__p96!.debug.clearArea("E"));
+  expect(await page.evaluate(() => window.__p96!.enemiesAlive())).toBe(0);
+  expect(await page.evaluate(() => window.__p96!.spittersAlive())).toBe(3); // 僅餘未清的區域 D
+  expect(await page.evaluate(() => window.__p96!.wardensAlive())).toBe(0);
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 85, y: 0, z: -10 }));
+  await page.waitForFunction(() => window.__p96!.debug.doorState("door-e") === "open", undefined, { timeout: 3_000 });
+
   // 走入終點觸發區：通關畫面出現，含通關時間與擊殺數。
-  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 64, y: 0, z: -10 }));
+  await page.evaluate(() => window.__p96!.debug.teleportPlayer({ x: 88, y: 0, z: -10 }));
   await page.waitForFunction(() => window.__p96?.gameState === "complete", undefined, { timeout: 3_000 });
 
   const winPanel = page.locator("#p96-win-overlay");
@@ -66,7 +91,7 @@ test("(a) 完整通關劇本：出生 → 撿手槍 → 門 A 開 → 清 B → 
   const statsText = await page.locator('[data-role="win-stats"]').textContent();
   expect(statsText).toContain("擊殺數");
   expect(statsText).toContain("通關時間");
-  expect(await page.evaluate(() => window.__p96!.kills())).toBeGreaterThanOrEqual(9); // 3（B）+ 6（C）
+  expect(await page.evaluate(() => window.__p96!.kills())).toBeGreaterThanOrEqual(16); // 3（B）+ 6（C）+ 4+2+1（E）
 
   // 回主選單：可重新開始完整流程。
   await page.locator('[data-role="win-return-menu"]').click();

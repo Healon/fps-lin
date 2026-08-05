@@ -27,11 +27,13 @@ export interface ProjectileSpawnOptions {
   color: readonly [number, number, number];
 }
 
-/** 投射物可能命中的目標（Crawler／Spitter／玩家包裝皆可，結構相容即可，不要求繼承關係）。 */
+/** 投射物可能命中的目標（Crawler／Spitter／Warden／玩家包裝皆可，結構相容即可，不要求
+ *  繼承關係）。hitDirection（M3 第二階段新增，可選）供 Warden 的方向性減傷判定使用
+ *  （見 game/warden.ts isFrontHit），其餘目標忽略此參數。 */
 export interface ProjectileTarget {
   getAabb(): Aabb;
   /** 回傳值語意依目標而定：敵人代表致命一擊，玩家代表傷害是否生效（同 Combat.damagePlayer 慣例）。 */
-  applyDamage(amount: number): boolean;
+  applyDamage(amount: number, hitDirection?: Vec3): boolean;
 }
 
 /** 依陣營回傳本幀可能被擊中的目標清單（enemy 陣營通常回傳僅含玩家的單一元素陣列；
@@ -50,6 +52,10 @@ export interface ProjectileInstance {
   pos: Vec3;
   faction: ProjectileFaction;
   color: readonly [number, number, number];
+  /** 生成後經過的模擬秒數（決定性，dt 累計）。渲染端用於「生成後漸長」：
+   *  電漿彈生成點在相機眼睛座標，第一幀貼臉的全尺寸暈光會炸成一團大閃光
+   *  （Lin 實玩回饋「擊發時暈光太大」），以 age 漸長讓彈體離開臉部後才到全尺寸。 */
+  age: number;
 }
 
 const MAX_LIFETIME_SECONDS = 3;
@@ -93,7 +99,7 @@ export class ProjectileSystem {
 
   /** 存活中的投射物實例（供渲染端讀取）。 */
   get instances(): ProjectileInstance[] {
-    return this.pool.filter((p) => p.alive).map((p) => ({ pos: { ...p.pos }, faction: p.faction, color: p.color }));
+    return this.pool.filter((p) => p.alive).map((p) => ({ pos: { ...p.pos }, faction: p.faction, color: p.color, age: p.age }));
   }
 
   /** 目前存活數（供測試驗證物件池行為，不代表 pool 陣列總長度）。 */
@@ -145,7 +151,7 @@ export class ProjectileSystem {
       // 先命中者算：目標交點需早於（或等於）牆面交點才算命中目標，否則視為打牆。
       if (nearestTarget !== null && (nearestWallT === null || nearestTargetT! <= nearestWallT)) {
         const hitPoint = addVec3(p.pos, scaleVec3(p.dir, nearestTargetT!));
-        const died = nearestTarget.applyDamage(p.damage);
+        const died = nearestTarget.applyDamage(p.damage, p.dir);
         events.push({ faction: p.faction, target: nearestTarget, point: hitPoint, died });
         p.alive = false;
         continue;

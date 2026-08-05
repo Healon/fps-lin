@@ -20,7 +20,7 @@ export interface Aabb {
 /** interleaved 頂點格式：position(3) + normal(3) + uv(2) = 8 float / 頂點（沿用 M0 慣例）。 */
 export const VERTEX_STRIDE = 8;
 
-export type DoorOpenCondition = "has-weapon" | "area-clear:B" | "area-clear:C" | "console-activated";
+export type DoorOpenCondition = "has-weapon" | "area-clear:B" | "area-clear:C" | "console-activated" | "area-clear:E";
 
 export interface DoorDef {
   id: string;
@@ -33,7 +33,14 @@ export interface DoorDef {
   collider: Aabb;
 }
 
-export type PickupKind = "weapon-pistol" | "weapon-shotgun" | "ammo-pistol" | "ammo-shotgun" | "medkit";
+export type PickupKind =
+  | "weapon-pistol"
+  | "weapon-shotgun"
+  | "weapon-plasma"
+  | "ammo-pistol"
+  | "ammo-shotgun"
+  | "ammo-plasma"
+  | "medkit";
 
 export interface PickupDef {
   id: string;
@@ -41,7 +48,7 @@ export interface PickupDef {
   pos: Vec3;
 }
 
-export type EnemyArea = "B" | "C" | "D";
+export type EnemyArea = "B" | "C" | "D" | "E";
 
 export interface EnemySpawnDef {
   id: string;
@@ -51,6 +58,14 @@ export interface EnemySpawnDef {
 
 /** M3：射擊體（Spitter）出生點，獨立於 EnemySpawnDef（不同敵人類別，見 game/spitter.ts）。 */
 export interface SpitterSpawnDef {
+  id: string;
+  pos: Vec3;
+  area: EnemyArea;
+}
+
+/** M3 第二階段：守衛體（Warden）出生點，獨立於 EnemySpawnDef／SpitterSpawnDef
+ *  （不同敵人類別，見 game/warden.ts）。 */
+export interface WardenSpawnDef {
   id: string;
   pos: Vec3;
   area: EnemyArea;
@@ -74,8 +89,10 @@ export interface LevelData {
   doors: DoorDef[];
   pickups: PickupDef[];
   enemySpawns: EnemySpawnDef[];
-  /** M3 新增：射擊體出生點（區域 D）。 */
+  /** M3 新增：射擊體出生點（區域 D、E）。 */
   spitterSpawns: SpitterSpawnDef[];
+  /** M3 第二階段新增：守衛體出生點（區域 E）。 */
+  wardenSpawns: WardenSpawnDef[];
   /** M3 新增：區域 D 控制台互動點。 */
   consoleDef: ConsoleDef;
   /** 終點觸發區：玩家與此區重疊即觸發通關（見 main.ts）。 */
@@ -457,25 +474,113 @@ export function generateLevel(): LevelData {
   ];
 
   // ============================================================
-  // 終點小室：door-d 之後的收尾空間，走入 endTrigger 即觸發通關畫面（文案沿用，
-  // M3 第三階段才換真結局，見 main.ts）。X:[62,66] Z:[-12,-8]。
+  // 區域 E：核心通道（M3 第二階段）。door-d 之後的終點小空間改建為此區：約 24×6m
+  // （X:[62,86] Z:[-13,-7]），牆高 5m（H_E，低於區域 C／D 的 7m，長廊壓迫感），
+  // 兩側交錯凹龕與柱體（掩體節奏：北凹龕 → 柱 → 南凹龕 → 柱）。西側與 door-d
+  // 共用區域 D 既有東牆（含門楣，已於上方區域 D 區塊建妥，此處不重複建牆）。
+  // 電漿步槍位於前段台座；彈藥 ammo-plasma ×2、醫療 ×1 沿途；4 巡行體＋2 射擊體＋
+  // 1 守衛體混編於中後段。尾端 door-e（條件 area-clear:E）通往終點小室與新 endTrigger。
   // ============================================================
-  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 64, cz: -10, hx: 2, hz: 2 }, 0, H_TALL);
-  addSolid(wallTarget, colliders, b(64, H_TALL / 2, -12 - WALL_T, 2 + WALL_T, H_TALL / 2, WALL_T));
-  addSolid(wallTarget, colliders, b(64, H_TALL / 2, -8 + WALL_T, 2 + WALL_T, H_TALL / 2, WALL_T));
-  addSolid(wallTarget, colliders, b(66 + WALL_T, H_TALL / 2, -10, WALL_T, H_TALL / 2, 2 + WALL_T));
+  const H_E = 5; // 區域 E 牆高（低於區域 C／D 的 7m，長廊壓迫感，本次派工規格）
+
+  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 74, cz: -10, hx: 12, hz: 3 }, 0, H_E);
+
+  // 北牆（z=-13）：中央 x:[66,69] 留給北凹龕入口，兩側實牆。
+  addSolid(wallTarget, colliders, b(64, H_E / 2, -13 - WALL_T, 2, H_E / 2, WALL_T)); // x:[62,66]
+  addSolid(wallTarget, colliders, b(77.5, H_E / 2, -13 - WALL_T, 8.5, H_E / 2, WALL_T)); // x:[69,86]
+
+  // 南牆（z=-7）：中央 x:[75,78] 留給南凹龕入口，兩側實牆。
+  addSolid(wallTarget, colliders, b(68.5, H_E / 2, -7 + WALL_T, 6.5, H_E / 2, WALL_T)); // x:[62,75]
+  addSolid(wallTarget, colliders, b(82, H_E / 2, -7 + WALL_T, 4, H_E / 2, WALL_T)); // x:[78,86]
+
+  // 北凹龕：x:[66,69]，深 1m（z:-13 → z:-14）。
+  addSolid(wallTarget, colliders, b(67.5, H_E / 2, -14 - WALL_T, 1.5, H_E / 2, WALL_T)); // 凹龕後牆
+  addSolid(wallTarget, colliders, b(66, H_E / 2, -13.5, WALL_T, H_E / 2, 0.5)); // 凹龕側牆（西）
+  addSolid(wallTarget, colliders, b(69, H_E / 2, -13.5, WALL_T, H_E / 2, 0.5)); // 凹龕側牆（東）
+  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 67.5, cz: -13.5, hx: 1.5, hz: 0.5 }, 0, H_E);
+
+  // 南凹龕：x:[75,78]，深 1m（z:-7 → z:-6）。
+  addSolid(wallTarget, colliders, b(76.5, H_E / 2, -6 + WALL_T, 1.5, H_E / 2, WALL_T)); // 凹龕後牆
+  addSolid(wallTarget, colliders, b(75, H_E / 2, -6.5, WALL_T, H_E / 2, 0.5)); // 凹龕側牆（西）
+  addSolid(wallTarget, colliders, b(78, H_E / 2, -6.5, WALL_T, H_E / 2, 0.5)); // 凹龕側牆（東）
+  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 76.5, cz: -6.5, hx: 1.5, hz: 0.5 }, 0, H_E);
+
+  // 柱體掩體 ×2（全高 H_E，與凹龕交錯：柱 1 近北凹龕之後偏南，柱 2 近南凹龕之後偏北）。
+  addSolid(wallTarget, colliders, b(72, H_E / 2, -8.3, 0.5, H_E / 2, 0.5));
+  addSolid(wallTarget, colliders, b(81, H_E / 2, -11.7, 0.5, H_E / 2, 0.5));
+
+  // 東牆：留中央 z:[-11.5,-8.5] 給 door-e，兩側實牆。
+  addSolid(wallTarget, colliders, b(86 + WALL_T, H_E / 2, -12.25, WALL_T, H_E / 2, 0.75));
+  addSolid(wallTarget, colliders, b(86 + WALL_T, H_E / 2, -7.75, WALL_T, H_E / 2, 0.75));
+  // door-e 門楣（區域 E 牆高 5m，門板僅 3.2m，其上至頂皆需封住）。
+  addSolid(
+    wallTarget,
+    colliders,
+    b(86 + WALL_T, DOOR_HALF_HEIGHT * 2 + (H_E - DOOR_HALF_HEIGHT * 2) / 2, -10, WALL_T, (H_E - DOOR_HALF_HEIGHT * 2) / 2, DOOR_HALF_WIDTH),
+  );
+
+  // 電漿步槍台座（小方柱，前段，door-d 之後不遠）。
+  addSolid(wallTarget, colliders, b(65, 0.4, -10, 0.3, 0.4, 0.3));
+  const plasmaPickup: PickupDef = { id: "pickup-plasma", kind: "weapon-plasma", pos: { x: 65, y: 0, z: -10 } };
+
+  const pickupsE: PickupDef[] = [
+    { id: "pickup-ammo-e0", kind: "ammo-plasma", pos: { x: 71, y: 0, z: -9.5 } },
+    { id: "pickup-ammo-e1", kind: "ammo-plasma", pos: { x: 82, y: 0, z: -10.5 } },
+    { id: "pickup-medkit-e0", kind: "medkit", pos: { x: 77, y: 0, z: -10 } },
+  ];
+
+  // 敵人混編（中後段，交錯南北兩側，避開柱體與凹龕入口）：4 巡行體＋2 射擊體＋1 守衛體。
+  const enemiesE: EnemySpawnDef[] = [
+    { id: "crawler-e0", pos: { x: 68, y: 0, z: -8.5 }, area: "E" },
+    { id: "crawler-e1", pos: { x: 70, y: 0, z: -11.5 }, area: "E" },
+    { id: "crawler-e2", pos: { x: 79, y: 0, z: -11.5 }, area: "E" },
+    { id: "crawler-e3", pos: { x: 81.5, y: 0, z: -8.5 }, area: "E" },
+  ];
+  const spittersE: SpitterSpawnDef[] = [
+    { id: "spitter-e0", pos: { x: 73, y: 0, z: -11.5 }, area: "E" },
+    { id: "spitter-e1", pos: { x: 76, y: 0, z: -8.5 }, area: "E" },
+  ];
+  const wardensE: WardenSpawnDef[] = [{ id: "warden-e0", pos: { x: 84, y: 0, z: -10 }, area: "E" }];
+
+  const doorE: DoorDef = {
+    id: "door-e",
+    pos: { x: 86, y: 0, z: -10 },
+    yaw: Math.PI / 2,
+    condition: "area-clear:E",
+    collider: aabbFromCenterHalf({ x: 86, y: DOOR_HALF_HEIGHT, z: -10 }, { x: DOOR_HALF_THICKNESS, y: DOOR_HALF_HEIGHT, z: DOOR_HALF_WIDTH }),
+  };
+
+  // ============================================================
+  // 終點小室：door-e 之後的收尾空間，走入 endTrigger 即觸發通關畫面。X:[86,90] Z:[-12,-8]。
+  // ============================================================
+  addFloorCeiling(floorTarget, ceilingTarget, colliders, { cx: 88, cz: -10, hx: 2, hz: 2 }, 0, H_E);
+  addSolid(wallTarget, colliders, b(88, H_E / 2, -12 - WALL_T, 2 + WALL_T, H_E / 2, WALL_T));
+  addSolid(wallTarget, colliders, b(88, H_E / 2, -8 + WALL_T, 2 + WALL_T, H_E / 2, WALL_T));
+  addSolid(wallTarget, colliders, b(90 + WALL_T, H_E / 2, -10, WALL_T, H_E / 2, 2 + WALL_T));
 
   const endTrigger: Aabb = {
-    min: { x: 62.5, y: 0, z: -11.5 },
-    max: { x: 66, y: 2.2, z: -8.5 },
+    min: { x: 86.5, y: 0, z: -11.5 },
+    max: { x: 90, y: 2.2, z: -8.5 },
   };
 
   // ---- 匯總 ----
-  const doors: DoorDef[] = [doorA, doorB, doorC, doorD];
-  const pickups: PickupDef[] = [pistolPickup, ...pickupsB, shotgunPickup, ...pickupsC];
-  const enemySpawns: EnemySpawnDef[] = [...enemiesB, ...enemiesC];
+  const doors: DoorDef[] = [doorA, doorB, doorC, doorD, doorE];
+  const pickups: PickupDef[] = [pistolPickup, ...pickupsB, shotgunPickup, ...pickupsC, plasmaPickup, ...pickupsE];
+  const enemySpawns: EnemySpawnDef[] = [...enemiesB, ...enemiesC, ...enemiesE];
+  const allSpitterSpawns: SpitterSpawnDef[] = [...spitterSpawns, ...spittersE];
+  const wardenSpawns: WardenSpawnDef[] = wardensE;
 
-  const levelHash = computeLevelHash(colliders, doors, pickups, enemySpawns, spitterSpawns, consoleDef, endTrigger, playerSpawn);
+  const levelHash = computeLevelHash(
+    colliders,
+    doors,
+    pickups,
+    enemySpawns,
+    allSpitterSpawns,
+    wardenSpawns,
+    consoleDef,
+    endTrigger,
+    playerSpawn,
+  );
 
   return {
     floorVertices: new Float32Array(floorTarget.vertices),
@@ -488,7 +593,8 @@ export function generateLevel(): LevelData {
     doors,
     pickups,
     enemySpawns,
-    spitterSpawns,
+    spitterSpawns: allSpitterSpawns,
+    wardenSpawns,
     consoleDef,
     endTrigger,
     playerSpawn,
@@ -515,6 +621,7 @@ function computeLevelHash(
   pickups: PickupDef[],
   enemySpawns: EnemySpawnDef[],
   spitterSpawns: SpitterSpawnDef[],
+  wardenSpawns: WardenSpawnDef[],
   consoleDef: ConsoleDef,
   endTrigger: Aabb,
   playerSpawn: Vec3,
@@ -537,6 +644,10 @@ function computeLevelHash(
   for (const s of spitterSpawns) {
     parts.push(s.id, s.area);
     pushVec3(parts, s.pos);
+  }
+  for (const w of wardenSpawns) {
+    parts.push(w.id, w.area);
+    pushVec3(parts, w.pos);
   }
   parts.push(consoleDef.id);
   pushVec3(parts, consoleDef.pos);

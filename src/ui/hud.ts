@@ -18,6 +18,7 @@ const VIGNETTE_INTENSITY = 0.28; // 2026-08-05 由 0.35 放鬆（配合整體亮
 const WEAPON_LABEL: Readonly<Record<string, string>> = {
   pistol: "脈衝手槍",
   shotgun: "散射槍",
+  plasma: "電漿步槍",
 };
 
 export class Hud {
@@ -194,7 +195,7 @@ export class Hud {
   }
 
   /** weaponId 為 null 表示尚未裝備任何武器（區域 A 出生時赤手空拳，撿取前不可開火）。 */
-  updateWeaponName(weaponId: "pistol" | "shotgun" | null): void {
+  updateWeaponName(weaponId: "pistol" | "shotgun" | "plasma" | null): void {
     this.weaponNameEl.textContent = weaponId ? WEAPON_LABEL[weaponId] : "赤手空拳";
   }
 
