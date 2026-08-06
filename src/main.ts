@@ -77,7 +77,7 @@ import type { ProjectileFaction, ProjectileInstance, ProjectileTarget } from "./
 import { ConsoleSystem } from "./game/console.ts";
 import { GameStateMachine } from "./game/state.ts";
 import type { GameState } from "./game/state.ts";
-import { SettingsStore, createBrowserStorage } from "./core/settings.ts";
+import { SettingsStore, KeyBindingStore, createBrowserStorage } from "./core/settings.ts";
 import { Overlay } from "./ui/overlay.ts";
 import { Hud } from "./ui/hud.ts";
 import { PauseMenu, SettingsPanel, WinScreen, IntroScreen } from "./ui/menu.ts";
@@ -276,13 +276,17 @@ function distanceXZ(a: Vec3, b: Vec3): number {
 }
 
 function boot(): void {
-  const overlay = new Overlay();
+  const settingsStore = new SettingsStore(createBrowserStorage());
+  // 按鍵重設（M3 第四階段新增）：獨立於數值設定的 storage 容器（見 core/settings.ts
+  // KeyBindingStore 註解：職責分開，不與 SettingsStore 合併），共用同一把 createBrowserStorage()
+  // 包裝（皆為 localStorage，key 命名空間不同，安全共用同一個 storage 實例）。
+  const keyBindingStore = new KeyBindingStore(createBrowserStorage());
+  const overlay = new Overlay(keyBindingStore.get());
   const hud = new Hud();
   const pauseMenu = new PauseMenu();
   const winScreen = new WinScreen();
   const introScreen = new IntroScreen();
-  const settingsStore = new SettingsStore(createBrowserStorage());
-  const settingsPanel = new SettingsPanel(settingsStore.get());
+  const settingsPanel = new SettingsPanel(settingsStore.get(), keyBindingStore.get());
   const gameState = new GameStateMachine();
   let loop: GameLoop | null = null;
 
@@ -470,13 +474,17 @@ function boot(): void {
     let shotgunSparkElapsed = SHOTGUN_SPARK_LIFETIME;
     let shotgunSparkData: { point: Vec3; kind: "enemy" | "wall" }[] = [];
 
-    const input = new InputManager(canvas, (locked) => {
-      // Esc 或其他方式退出 pointer lock：只有在「正在遊玩」時才視為暫停操作；menu 狀態下
-      // （尚未鎖定過）不會觸發（見 core/input.ts：locked 由 true→false 才會呼叫本callback）。
-      if (!locked && gameState.state === "playing") {
-        gameState.pause();
-      }
-    });
+    const input = new InputManager(
+      canvas,
+      (locked) => {
+        // Esc 或其他方式退出 pointer lock：只有在「正在遊玩」時才視為暫停操作；menu 狀態下
+        // （尚未鎖定過）不會觸發（見 core/input.ts：locked 由 true→false 才會呼叫本callback）。
+        if (!locked && gameState.state === "playing") {
+          gameState.pause();
+        }
+      },
+      keyBindingStore.get(), // 套用已儲存（或預設）的按鍵映射，M3 第四階段新增
+    );
 
     overlay.onStart(() => {
       // 每次「點擊進入」（含首次開始與通關後返回主選單再開始）一律先從種子完整重建，
@@ -547,6 +555,25 @@ function boot(): void {
         settingsStore.setFov(value);
         renderer.setFov(settingsStore.get().fov);
       }
+    });
+
+    /** 按鍵映射變更後的共用收尾：套用到 InputManager（即時生效）、回寫設定面板六列顯示
+     *  （含互換連動的另一列）、回寫主選單操控提示（M3 第四階段新增）。 */
+    function applyKeyBindingsChange(): void {
+      const bindings = keyBindingStore.get();
+      input.setBindings(bindings);
+      settingsPanel.updateKeyBindingsDisplay(bindings);
+      overlay.updateControlsHint(bindings);
+    }
+
+    settingsPanel.onKeyRebind((action, code) => {
+      keyBindingStore.setBinding(action, code);
+      applyKeyBindingsChange();
+    });
+
+    settingsPanel.onKeyReset(() => {
+      keyBindingStore.resetToDefault();
+      applyKeyBindingsChange();
     });
 
     /** 對玩家造成傷害的共用路徑：命中即播放受傷音效（供敵人近戰、投射物與 debug hook 共用）。 */
@@ -909,6 +936,8 @@ function boot(): void {
         cannonChargeProgress: () => inventory.cannon.chargeProgress,
         setState: (state: GameState) => gameState.setState(state),
         getSettings: () => settingsStore.get(),
+        /** 目前套用中的按鍵映射（M3 第四階段新增，供 reload 後驗收綁定是否讀回一致）。 */
+        getKeyBindings: () => keyBindingStore.get(),
         getFov: () => renderer.getFov(),
         grantWeapon: (id: WeaponId) => grantWeaponDebug(id),
         clearArea: (area: EnemyArea) => {

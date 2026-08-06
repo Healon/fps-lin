@@ -2,15 +2,39 @@
 // 全形標點、行內樣式無外部 CSS 檔）。
 //
 // PauseMenu：playing → paused（Esc 或 pointer lock 退出）時顯示，提供「繼續／設定／重新開始」。
-// SettingsPanel：主選單與暫停選單皆可進入（本次派工規格），三項設定各用加減按鈕（而非拖曳
+// SettingsPanel：主選單與暫停選單皆可進入（本次派工規格），三項數值設定各用加減按鈕（而非拖曳
 // 滑桿）即時生效即時儲存——按鈕比滑桿更適合自動化測試（可精確重複點擊到目標值，不依賴
 // range input 在無頭瀏覽器下的 fill() 行為）。z-index 高於暫停面板，兩者由 main.ts 依
 // game/state.ts 的 GameStateMachine 統一驅動顯示邏輯。
+//
+// M3 第四階段新增「按鍵設定」區：前進／後退／左移／右移／射擊／互動六個動作可重設，方向鍵
+// 視角、數字鍵武器切換、Esc 暫停固定不可重設（面板內明示）。點「重新綁定」進入擷取態，下一次
+// 按鍵即為新綁定（Esc 取消，不變更）；若該鍵已被其他動作使用則兩者互換，並提示互換結果。
 
-import type { Settings, SettingsField } from "../core/settings.ts";
-import { SENSITIVITY_MIN, SENSITIVITY_MAX, VOLUME_MIN, VOLUME_MAX, FOV_MIN, FOV_MAX } from "../core/settings.ts";
+import type { Settings, SettingsField, KeyBindings, KeyBindableAction } from "../core/settings.ts";
+import {
+  SENSITIVITY_MIN,
+  SENSITIVITY_MAX,
+  VOLUME_MIN,
+  VOLUME_MAX,
+  FOV_MIN,
+  FOV_MAX,
+  KEY_BINDABLE_ACTIONS,
+} from "../core/settings.ts";
+import { keyCodeDisplayName } from "./key-display.ts";
 
 export type { SettingsField };
+
+const KEY_ACTION_LABELS: Readonly<Record<KeyBindableAction, string>> = {
+  forward: "前進",
+  back: "後退",
+  left: "左移",
+  right: "右移",
+  fire: "射擊",
+  interact: "互動",
+};
+
+const CAPTURE_PROMPT_TEXT = "請按下新按鍵…（Esc 取消）";
 
 const COLOR_BG_OVERLAY = "rgba(8, 9, 11, 0.86)";
 const COLOR_TEXT = "#F2F2F2";
@@ -245,11 +269,18 @@ export class SettingsPanel {
   private readonly root: HTMLDivElement;
   private onBackCb: (() => void) | null = null;
   private onChangeCb: ((field: SettingsField, value: number) => void) | null = null;
+  private onKeyRebindCb: ((action: KeyBindableAction, code: string) => void) | null = null;
+  private onKeyResetCb: (() => void) | null = null;
   private readonly valueEls: Record<SettingsField, HTMLDivElement>;
   private readonly values: Record<SettingsField, number>;
+  private readonly keyValueEls: Record<KeyBindableAction, HTMLDivElement>;
+  private keyBindings: KeyBindings;
+  /** 目前正在擷取新按鍵的動作（null＝未在擷取），同一時間至多一項擷取中，避免重疊監聽器。 */
+  private capturingAction: KeyBindableAction | null = null;
 
-  constructor(initial: Readonly<Settings>, container: HTMLElement = document.body) {
+  constructor(initial: Readonly<Settings>, initialKeyBindings: Readonly<KeyBindings>, container: HTMLElement = document.body) {
     this.values = { sensitivity: initial.sensitivity, volume: initial.volume, fov: initial.fov };
+    this.keyBindings = { ...initialKeyBindings };
 
     this.root = document.createElement("div");
     this.root.id = "p96-settings-overlay";
@@ -260,12 +291,17 @@ export class SettingsPanel {
       flexDirection: "column",
       alignItems: "center",
       justifyContent: "center",
-      gap: "22px",
+      gap: "16px",
       background: COLOR_BG_OVERLAY,
       color: COLOR_TEXT,
       zIndex: "27", // 高於 PauseMenu(26)：設定畫面可能疊在暫停選單之上開啟
       fontFamily: "system-ui, -apple-system, sans-serif",
       textAlign: "center",
+      // 按鍵設定區使六項內容變多，面板可能高於視窗（尤其小螢幕）：允許垂直捲動並保留上下邊距，
+      // 避免內容被裁切而點不到「返回」按鈕。
+      maxHeight: "92vh",
+      overflowY: "auto",
+      padding: "16px 0",
     });
 
     const title = document.createElement("div");
@@ -286,12 +322,119 @@ export class SettingsPanel {
     }
     this.valueEls = valueEls;
 
+    const keySectionTitle = document.createElement("div");
+    keySectionTitle.textContent = "按鍵設定";
+    Object.assign(keySectionTitle.style, {
+      fontSize: "16px",
+      fontWeight: "700",
+      color: COLOR_TEXT,
+      marginTop: "6px",
+    });
+    this.root.appendChild(keySectionTitle);
+
+    const keySectionNote = document.createElement("div");
+    keySectionNote.textContent = "方向鍵視角、數字鍵 1234 切換武器、Esc 暫停為固定按鍵，不可重設。";
+    Object.assign(keySectionNote.style, {
+      fontSize: "12px",
+      color: COLOR_TEXT,
+      opacity: "0.6",
+      maxWidth: "360px",
+      letterSpacing: "0.02em",
+    });
+    this.root.appendChild(keySectionNote);
+
+    const keyValueEls = {} as Record<KeyBindableAction, HTMLDivElement>;
+    for (const action of KEY_BINDABLE_ACTIONS) {
+      const { row, valueEl } = this.buildKeyRow(action);
+      keyValueEls[action] = valueEl;
+      this.root.appendChild(row);
+    }
+    this.keyValueEls = keyValueEls;
+
+    const keysResetBtn = buildMenuButton("恢復預設按鍵");
+    keysResetBtn.dataset["role"] = "keys-reset";
+    Object.assign(keysResetBtn.style, { minWidth: "0", padding: "6px 18px", fontSize: "13px" });
+    keysResetBtn.addEventListener("click", () => this.onKeyResetCb?.());
+    this.root.appendChild(keysResetBtn);
+
     const backBtn = buildMenuButton("返回");
     backBtn.dataset["role"] = "settings-back";
     backBtn.addEventListener("click", () => this.onBackCb?.());
     this.root.appendChild(backBtn);
 
     container.appendChild(this.root);
+  }
+
+  private buildKeyRow(action: KeyBindableAction): { row: HTMLDivElement; valueEl: HTMLDivElement } {
+    const row = document.createElement("div");
+    Object.assign(row.style, { display: "flex", alignItems: "center", gap: "12px" });
+
+    const labelEl = document.createElement("div");
+    labelEl.textContent = `${KEY_ACTION_LABELS[action]}：`;
+    Object.assign(labelEl.style, {
+      minWidth: "150px",
+      textAlign: "right",
+      fontSize: "14px",
+      opacity: "0.85",
+      letterSpacing: "0.04em",
+    });
+
+    const valueEl = document.createElement("div");
+    valueEl.dataset["role"] = `key-${action}-value`;
+    valueEl.textContent = keyCodeDisplayName(this.keyBindings[action]);
+    Object.assign(valueEl.style, {
+      minWidth: "90px",
+      fontSize: "15px",
+      fontWeight: "700",
+      color: COLOR_ACCENT,
+    });
+
+    const rebindBtn = document.createElement("button");
+    rebindBtn.textContent = "重新綁定";
+    rebindBtn.dataset["role"] = `key-${action}-rebind`;
+    Object.assign(rebindBtn.style, {
+      padding: "6px 14px",
+      background: "transparent",
+      border: `1px solid ${COLOR_ACCENT}`,
+      borderRadius: "4px",
+      color: COLOR_TEXT,
+      fontSize: "13px",
+      cursor: "pointer",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+    });
+    rebindBtn.addEventListener("click", () => this.startCapture(action));
+
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    row.appendChild(rebindBtn);
+    return { row, valueEl };
+  }
+
+  /**
+   * 進入「請按下新按鍵」擷取態：以 capture 階段（第三參數 true）監聽 window 的下一次 keydown，
+   * 確保比 core/input.ts InputManager 的（bubbling 階段）監聽器先攔截到同一次按鍵事件並
+   * stopPropagation，避免使用者在設定畫面按下移動／射擊鍵時同時被當成真實遊玩輸入處理
+   * （設定畫面開啟時 gameState 為 menu 或 paused，模擬本就不消費 input.state，此處為保守防呆，
+   * 避免鍵按住未放開造成 InputManager 內部旗標卡在 true，見 input.ts setBindings 同精神註解）。
+   * Esc 取消（不變更任何綁定，還原顯示）；其餘鍵一律回呼 onKeyRebindCb 交由呼叫端決定是否
+   * 生效（呼叫端會再呼叫 updateKeyBindingsDisplay 覆蓋回顯示最終結果，含互換連動的另一列）。
+   */
+  private startCapture(action: KeyBindableAction): void {
+    if (this.capturingAction !== null) return; // 已有擷取中，忽略重疊點擊（同一時間僅一項擷取）
+    this.capturingAction = action;
+    const valueEl = this.keyValueEls[action];
+    valueEl.textContent = CAPTURE_PROMPT_TEXT;
+
+    const handler = (e: KeyboardEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.removeEventListener("keydown", handler, true);
+      this.capturingAction = null;
+      valueEl.textContent = keyCodeDisplayName(this.keyBindings[action]); // 先還原成目前值，成功時下方 onKeyRebindCb 觸發的 updateKeyBindingsDisplay 會再覆蓋成新值
+      if (e.code === "Escape") return;
+      this.onKeyRebindCb?.(action, e.code);
+    };
+    window.addEventListener("keydown", handler, true);
   }
 
   private buildRow(field: SettingsField): { row: HTMLDivElement; valueEl: HTMLDivElement } {
@@ -367,6 +510,27 @@ export class SettingsPanel {
   /** 使用者透過加減按鈕變更某項設定時觸發，呼叫端應轉交正式 API 並持久化（見 main.ts）。 */
   onChange(cb: (field: SettingsField, value: number) => void): void {
     this.onChangeCb = cb;
+  }
+
+  /** 使用者成功擷取到一個新按鍵（非 Esc 取消）時觸發，呼叫端應轉交 KeyBindingStore.setBinding
+   *  並將結果（含可能的互換）以 updateKeyBindingsDisplay() 回寫本面板（見 main.ts）。 */
+  onKeyRebind(cb: (action: KeyBindableAction, code: string) => void): void {
+    this.onKeyRebindCb = cb;
+  }
+
+  /** 使用者點擊「恢復預設按鍵」時觸發，呼叫端應轉交 KeyBindingStore.resetToDefault 並回寫。 */
+  onKeyReset(cb: () => void): void {
+    this.onKeyResetCb = cb;
+  }
+
+  /** 依最新按鍵映射重新整理六列的顯示文字（main.ts 於 setBinding／resetToDefault 之後呼叫）。
+   *  若當下正有動作在擷取中，不覆蓋其「請按下新按鍵」提示（擷取完成後自會以最新值覆蓋）。 */
+  updateKeyBindingsDisplay(bindings: Readonly<KeyBindings>): void {
+    this.keyBindings = { ...bindings };
+    for (const action of KEY_BINDABLE_ACTIONS) {
+      if (action === this.capturingAction) continue;
+      this.keyValueEls[action].textContent = keyCodeDisplayName(this.keyBindings[action]);
+    }
   }
 
   show(): void {

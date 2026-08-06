@@ -5,6 +5,14 @@
 // 2026-08-04（M2）：主選單新增「設定」按鈕入口（onSettings()），並加入準星顯隱控制
 // （showCrosshair／hideCrosshair）：非 playing 狀態（menu／paused／設定畫面）隱藏準星，
 // 避免與選單文字重疊；由 main.ts 的 gameState 狀態機統一驅動（見 game/state.ts）。
+//
+// M3 第四階段：操控提示改為依目前按鍵映射動態生成（updateControlsHint()），反映使用者於
+// 設定面板重新綁定後的實際按鍵；方向鍵視角、數字鍵切換武器、Esc 暫停固定不變（本次派工規格），
+// 故其提示文字仍為靜態字串，只有前進／後退／左移／右移／射擊／互動六項隨綁定變化。
+
+import type { KeyBindings } from "../core/settings.ts";
+import { DEFAULT_KEY_BINDINGS } from "../core/settings.ts";
+import { keyCodeDisplayName } from "./key-display.ts";
 
 const COLOR_BG = "#08090B";
 const COLOR_PANEL = "#16191D";
@@ -12,16 +20,36 @@ const COLOR_TEXT = "#F2F2F2";
 const COLOR_ACCENT = "#35E0FF";
 const COLOR_ERROR = "#FF5A26";
 
+function buildControlsLines(bindings: Readonly<KeyBindings>): string[] {
+  const fwd = keyCodeDisplayName(bindings.forward);
+  const back = keyCodeDisplayName(bindings.back);
+  const left = keyCodeDisplayName(bindings.left);
+  const right = keyCodeDisplayName(bindings.right);
+  const fire = keyCodeDisplayName(bindings.fire);
+  const interact = keyCodeDisplayName(bindings.interact);
+  return [
+    `移動：前 ${fwd}　後 ${back}　左 ${left}　右 ${right}`,
+    "滑鼠 或 方向鍵：視角",
+    `滑鼠左鍵 或 ${fire}：射擊`,
+    "1 2 3 4：切換武器",
+    `${interact}：互動`,
+    "Esc：暫停",
+  ];
+}
+
 export class Overlay {
   private readonly startPanel: HTMLDivElement;
   private readonly crosshair: HTMLDivElement;
   private readonly errorPanel: HTMLDivElement;
   private readonly crosshairBars: HTMLDivElement[] = [];
+  private readonly controlsEl: HTMLDivElement;
   private onStartCallback: (() => void) | null = null;
   private onSettingsCallback: (() => void) | null = null;
 
-  constructor(container: HTMLElement = document.body) {
-    this.startPanel = this.buildStartPanel();
+  constructor(initialKeyBindings: Readonly<KeyBindings> = DEFAULT_KEY_BINDINGS, container: HTMLElement = document.body) {
+    const built = this.buildStartPanel(initialKeyBindings);
+    this.startPanel = built.panel;
+    this.controlsEl = built.controlsEl;
     this.crosshair = this.buildCrosshair();
     this.errorPanel = this.buildErrorPanel();
 
@@ -34,7 +62,12 @@ export class Overlay {
     });
   }
 
-  private buildStartPanel(): HTMLDivElement {
+  /** 按鍵映射變更後（設定面板重綁或恢復預設）呼叫，重新生成主選單操控提示文字。 */
+  updateControlsHint(bindings: Readonly<KeyBindings>): void {
+    this.controlsEl.innerHTML = buildControlsLines(bindings).join("<br>");
+  }
+
+  private buildStartPanel(initialKeyBindings: Readonly<KeyBindings>): { panel: HTMLDivElement; controlsEl: HTMLDivElement } {
     const el = document.createElement("div");
     el.id = "p96-start-overlay";
     Object.assign(el.style, {
@@ -55,7 +88,7 @@ export class Overlay {
     });
 
     const title = document.createElement("div");
-    title.textContent = "PROJECT 96［M2］";
+    title.textContent = "PROJECT 96［M3］";
     Object.assign(title.style, {
       fontSize: "clamp(24px, 5vw, 48px)",
       fontWeight: "700",
@@ -73,14 +106,8 @@ export class Overlay {
     });
 
     const controls = document.createElement("div");
-    controls.innerHTML = [
-      "W A S D：移動",
-      "滑鼠 或 方向鍵：視角",
-      "滑鼠左鍵 或 空白鍵：射擊",
-      "1 2 3 4：切換武器",
-      "E：互動",
-      "Esc：暫停",
-    ].join("<br>");
+    controls.dataset["role"] = "menu-controls-hint";
+    controls.innerHTML = buildControlsLines(initialKeyBindings).join("<br>");
     Object.assign(controls.style, {
       fontSize: "clamp(12px, 1.6vw, 15px)",
       color: COLOR_TEXT,
@@ -115,7 +142,7 @@ export class Overlay {
     el.appendChild(prompt);
     el.appendChild(controls);
     el.appendChild(settingsButton);
-    return el;
+    return { panel: el, controlsEl: controls };
   }
 
   private buildCrosshair(): HTMLDivElement {

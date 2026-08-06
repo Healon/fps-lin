@@ -15,6 +15,12 @@ import {
   VOLUME_MAX,
   FOV_MIN,
   FOV_MAX,
+  loadKeyBindings,
+  saveKeyBinding,
+  KeyBindingStore,
+  DEFAULT_KEY_BINDINGS,
+  KEY_BINDABLE_ACTIONS,
+  RESERVED_KEY_CODES,
 } from "../../src/core/settings.ts";
 
 test("無任何儲存值時，loadSettings 回傳預設值（靈敏度 1.0／音量 80／FOV 90）", () => {
@@ -98,4 +104,123 @@ test("onChange 監聽者於設定變更時收到最新完整 Settings", () => {
   });
   store.setVolume(50);
   assert.deepEqual(received, { ...DEFAULT_SETTINGS, volume: 50 });
+});
+
+// ---- 按鍵重設（M3 第四階段新增）----
+
+test("無任何儲存值時，loadKeyBindings 回傳預設按鍵映射", () => {
+  const storage = new MemoryStorage();
+  assert.deepEqual(loadKeyBindings(storage), DEFAULT_KEY_BINDINGS);
+});
+
+test("儲存合法值後，loadKeyBindings 讀回一致", () => {
+  const storage = new MemoryStorage();
+  saveKeyBinding(storage, "fire", "KeyF");
+  saveKeyBinding(storage, "interact", "KeyG");
+  const bindings = loadKeyBindings(storage);
+  assert.equal(bindings.fire, "KeyF");
+  assert.equal(bindings.interact, "KeyG");
+  assert.equal(bindings.forward, DEFAULT_KEY_BINDINGS.forward); // 未寫入者維持預設
+
+});
+
+test("格式不合法的值（空字串／含特殊符號／過長）該欄回退預設值", () => {
+  const storage = new MemoryStorage();
+  storage.setItem("p96.settings.keys.fire", "");
+  storage.setItem("p96.settings.keys.interact", "Key-E!");
+  storage.setItem("p96.settings.keys.forward", "A".repeat(40));
+  const bindings = loadKeyBindings(storage);
+  assert.equal(bindings.fire, DEFAULT_KEY_BINDINGS.fire);
+  assert.equal(bindings.interact, DEFAULT_KEY_BINDINGS.interact);
+  assert.equal(bindings.forward, DEFAULT_KEY_BINDINGS.forward);
+});
+
+test("保留碼（方向鍵視角／數字鍵武器／Esc）不可作為可重設動作的值，該欄回退預設值", () => {
+  for (const reserved of RESERVED_KEY_CODES) {
+    const storage = new MemoryStorage();
+    storage.setItem("p96.settings.keys.fire", reserved);
+    const bindings = loadKeyBindings(storage);
+    assert.equal(bindings.fire, DEFAULT_KEY_BINDINGS.fire, `保留碼 ${reserved} 不應被接受`);
+  }
+});
+
+test("六項之間出現重複綁定（同一 code 綁給兩個動作）時，整組回退預設", () => {
+  const storage = new MemoryStorage();
+  // forward 與 back 都被（不合規地）寫成同一個 code。
+  saveKeyBinding(storage, "forward", "KeyJ");
+  saveKeyBinding(storage, "back", "KeyJ");
+  saveKeyBinding(storage, "fire", "KeyF"); // 這項單獨看合法，但整組仍因重複而全部回退
+  const bindings = loadKeyBindings(storage);
+  assert.deepEqual(bindings, DEFAULT_KEY_BINDINGS);
+});
+
+test("KeyBindingStore 建構時會從既有 storage 載入", () => {
+  const storage = new MemoryStorage();
+  saveKeyBinding(storage, "fire", "KeyF");
+  const store = new KeyBindingStore(storage);
+  assert.equal(store.get().fire, "KeyF");
+});
+
+test("KeyBindingStore.setBinding：無衝突時直接更新單一動作並持久化", () => {
+  const storage = new MemoryStorage();
+  const store = new KeyBindingStore(storage);
+  const conflict = store.setBinding("fire", "KeyF");
+  assert.equal(conflict, null);
+  assert.equal(store.get().fire, "KeyF");
+  assert.equal(loadKeyBindings(storage).fire, "KeyF");
+});
+
+test("KeyBindingStore.setBinding：目標 code 已被其他動作使用時，兩者互換", () => {
+  const storage = new MemoryStorage();
+  const store = new KeyBindingStore(storage);
+  // interact 預設 KeyE；把 forward 改綁成 KeyE（interact 目前所在的 code）。
+  const conflict = store.setBinding("forward", "KeyE");
+  assert.equal(conflict, "interact");
+  assert.equal(store.get().forward, "KeyE");
+  assert.equal(store.get().interact, DEFAULT_KEY_BINDINGS.forward); // interact 拿走 forward 原本的 KeyW
+  // 兩者皆已持久化。
+  assert.equal(loadKeyBindings(storage).forward, "KeyE");
+  assert.equal(loadKeyBindings(storage).interact, DEFAULT_KEY_BINDINGS.forward);
+});
+
+test("KeyBindingStore.setBinding：保留碼（方向鍵／數字鍵／Esc）一律拒絕，不變更任何綁定", () => {
+  const storage = new MemoryStorage();
+  const store = new KeyBindingStore(storage);
+  const before = store.get();
+  const conflict = store.setBinding("fire", "ArrowUp");
+  assert.equal(conflict, null);
+  assert.deepEqual(store.get(), before);
+});
+
+test("KeyBindingStore.resetToDefault：恢復全部預設並持久化", () => {
+  const storage = new MemoryStorage();
+  const store = new KeyBindingStore(storage);
+  store.setBinding("fire", "KeyF");
+  store.setBinding("interact", "KeyG");
+  store.resetToDefault();
+  assert.deepEqual(store.get(), DEFAULT_KEY_BINDINGS);
+  assert.deepEqual(loadKeyBindings(storage), DEFAULT_KEY_BINDINGS);
+});
+
+test("KeyBindingStore.onChange：setBinding 與 resetToDefault 皆會通知監聽者最新完整映射", () => {
+  const storage = new MemoryStorage();
+  const store = new KeyBindingStore(storage);
+  let received: unknown = null;
+  store.onChange((b) => {
+    received = b;
+  });
+  store.setBinding("fire", "KeyF");
+  assert.equal((received as { fire: string }).fire, "KeyF");
+  store.resetToDefault();
+  assert.deepEqual(received, DEFAULT_KEY_BINDINGS);
+});
+
+test("KEY_BINDABLE_ACTIONS 恰為六個可重設動作，且與 DEFAULT_KEY_BINDINGS 欄位一致", () => {
+  assert.deepEqual(
+    [...KEY_BINDABLE_ACTIONS].sort(),
+    ["back", "fire", "forward", "interact", "left", "right"].sort(),
+  );
+  for (const action of KEY_BINDABLE_ACTIONS) {
+    assert.equal(typeof DEFAULT_KEY_BINDINGS[action], "string");
+  }
 });

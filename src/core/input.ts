@@ -1,5 +1,12 @@
 // 輸入管理：pointer lock（點 canvas 取得，Esc 由瀏覽器退出時觸發 overlay 回呼）、
 // WASD 移動、方向鍵視角（無滑鼠替代）、空白鍵或左鍵射擊、滑鼠 delta。無跳躍（D-005）。
+//
+// M3 第四階段：前進／後退／左移／右移／射擊／互動六個動作改由外部注入的 KeyBindings 決定
+// （core/settings.ts），不再硬編 switch case；setBindings() 供設定面板即時重綁後同步套用
+// （呼應 sensitivity／volume／fov 等既有設定「即時生效」慣例）。方向鍵視角與數字鍵武器切換
+// 維持固定，不受 KeyBindings 影響（本次派工規格：僅六個動作可重設）。
+
+import { DEFAULT_KEY_BINDINGS, type KeyBindings } from "./settings.ts";
 
 export interface InputState {
   forward: boolean;
@@ -39,6 +46,9 @@ export class InputManager {
     return this.state.fire || this.state.fireKey;
   }
 
+  /** 目前生效的按鍵映射（M3 第四階段新增），預設值同舊硬編行為，setBindings() 可即時更新。 */
+  private bindings: KeyBindings;
+
   private mouseDX = 0;
   private mouseDY = 0;
   /** 數字鍵 1／2／3／4（切換武器）為邊緣觸發（keydown 當下才記一次，非按住持續觸發），
@@ -73,7 +83,7 @@ export class InputManager {
       e.preventDefault();
       return;
     }
-    if (e.code === "KeyE") {
+    if (e.code === this.bindings.interact) {
       this.pendingInteract = true;
       e.preventDefault();
       return;
@@ -119,9 +129,14 @@ export class InputManager {
     this.onPointerLockChange?.(locked);
   };
 
-  constructor(canvas: HTMLCanvasElement, onPointerLockChange?: PointerLockChangeCallback) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    onPointerLockChange?: PointerLockChangeCallback,
+    initialBindings: Readonly<KeyBindings> = DEFAULT_KEY_BINDINGS,
+  ) {
     this.canvas = canvas;
     this.onPointerLockChange = onPointerLockChange;
+    this.bindings = { ...initialBindings };
 
     window.addEventListener("keydown", this.handleKeyDown);
     window.addEventListener("keyup", this.handleKeyUp);
@@ -131,24 +146,31 @@ export class InputManager {
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
   }
 
-  /** 回傳是否為本遊戲處理的按鍵（供呼叫端決定是否 preventDefault，擋掉空白鍵與方向鍵的頁面捲動）。 */
+  /** 回傳是否為本遊戲處理的按鍵（供呼叫端決定是否 preventDefault，擋掉空白鍵與方向鍵的頁面捲動）。
+   *  前進／後退／左移／右移／射擊改依 this.bindings 動態比對（M3 第四階段，可重設）；
+   *  方向鍵視角固定不變（本次派工規格：僅六個動作可重設，方向鍵視角不在其列）。 */
   private setKey(code: string, pressed: boolean): boolean {
+    if (code === this.bindings.forward) {
+      this.state.forward = pressed;
+      return true;
+    }
+    if (code === this.bindings.back) {
+      this.state.back = pressed;
+      return true;
+    }
+    if (code === this.bindings.left) {
+      this.state.left = pressed;
+      return true;
+    }
+    if (code === this.bindings.right) {
+      this.state.right = pressed;
+      return true;
+    }
+    if (code === this.bindings.fire) {
+      this.state.fireKey = pressed;
+      return true;
+    }
     switch (code) {
-      case "KeyW":
-        this.state.forward = pressed;
-        return true;
-      case "KeyS":
-        this.state.back = pressed;
-        return true;
-      case "KeyA":
-        this.state.left = pressed;
-        return true;
-      case "KeyD":
-        this.state.right = pressed;
-        return true;
-      case "Space":
-        this.state.fireKey = pressed;
-        return true;
       case "ArrowLeft":
         this.state.lookLeft = pressed;
         return true;
@@ -208,6 +230,18 @@ export class InputManager {
     const req = this.pendingInteract;
     this.pendingInteract = false;
     return req;
+  }
+
+  /** 即時套用新的按鍵映射（設定面板重綁後呼叫，M3 第四階段新增）。同時歸零六個可重設動作
+   *  目前的按下狀態，避免舊映射下按住未放開的鍵換了映射後 keyup 對不上而卡在 true 不放
+   *  （設定面板僅在 menu／paused 開放重綁，此時模擬本就不消費輸入，此處為保守防呆）。 */
+  setBindings(bindings: Readonly<KeyBindings>): void {
+    this.bindings = { ...bindings };
+    this.state.forward = false;
+    this.state.back = false;
+    this.state.left = false;
+    this.state.right = false;
+    this.state.fireKey = false;
   }
 
   dispose(): void {

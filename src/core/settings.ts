@@ -119,6 +119,149 @@ export function saveSetting(storage: StorageLike, key: keyof Settings, value: nu
   storage.setItem(STORAGE_KEYS[key], String(value));
 }
 
+// ---- 按鍵重設（M3 第四階段新增，PLAN §9 M3「無障礙選項」之一）----
+//
+// 可重設的六個動作：前進／後退／左移／右移／射擊／互動。方向鍵視角、數字鍵武器切換、Esc
+// 暫停維持固定不可重設（本次派工規格明示），故不在此列。值為 KeyboardEvent.code
+// （如 "KeyW"、"Space"），非 event.key，理由同 core/input.ts 既有慣例：code 不受鍵盤配置
+// 影響（大小寫、輸入法、Shift 皆不影響 code）。
+
+export type KeyBindableAction = "forward" | "back" | "left" | "right" | "fire" | "interact";
+
+export interface KeyBindings {
+  forward: string;
+  back: string;
+  left: string;
+  right: string;
+  fire: string;
+  interact: string;
+}
+
+export const KEY_BINDABLE_ACTIONS: readonly KeyBindableAction[] = ["forward", "back", "left", "right", "fire", "interact"];
+
+export const DEFAULT_KEY_BINDINGS: Readonly<KeyBindings> = Object.freeze({
+  forward: "KeyW",
+  back: "KeyS",
+  left: "KeyA",
+  right: "KeyD",
+  fire: "Space",
+  interact: "KeyE",
+});
+
+const KEY_BINDING_STORAGE_KEYS: Readonly<Record<KeyBindableAction, string>> = {
+  forward: "p96.settings.keys.forward",
+  back: "p96.settings.keys.back",
+  left: "p96.settings.keys.left",
+  right: "p96.settings.keys.right",
+  fire: "p96.settings.keys.fire",
+  interact: "p96.settings.keys.interact",
+};
+
+/** 固定不可重設的 code：方向鍵視角、數字鍵武器切換、Esc 暫停（本次派工規格）。載入與重綁
+ *  皆拒絕這些 code 指派給可重設動作，避免一鍵身兼二責的靜默混淆。 */
+export const RESERVED_KEY_CODES: ReadonlySet<string> = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Digit1",
+  "Digit2",
+  "Digit3",
+  "Digit4",
+  "Escape",
+]);
+
+/** code 值的最小格式檢查（KeyboardEvent.code 皆為英數字，如 "KeyW"／"Space"／"ShiftLeft"）
+ *  加保留碼排除。不做完整白名單比對（code 空間大且會隨鍵盤持續擴充），格式加保留碼已足以
+ *  擋下明顯壞值（見 loadKeyBindings 註解：壞值不得進遊戲）。 */
+function isValidKeyCode(raw: string | null): raw is string {
+  if (raw === null) return false;
+  if (!/^[A-Za-z0-9]{1,32}$/.test(raw)) return false;
+  if (RESERVED_KEY_CODES.has(raw)) return false;
+  return true;
+}
+
+function parseStoredKeyValue(raw: string | null, fallback: string): string {
+  return isValidKeyCode(raw) ? raw : fallback;
+}
+
+/**
+ * 讀取完整按鍵映射：先逐項回退非法值（同 loadSettings 慣例，格式不合法或為保留碼者回退該項
+ * 預設值），再檢查六項之間是否有重複綁定（同一 code 綁給兩個不同動作）。重複綁定是「整組」
+ * 不變量而非單一欄位問題，無法歸咎於哪一項，一律整組回退預設（呼應 PLAN §8.1
+ * 「有值不等於有效」：逐項皆為合法 code 字串，但整組語意仍可能無效）。
+ */
+export function loadKeyBindings(storage: StorageLike): KeyBindings {
+  const result = {} as KeyBindings;
+  for (const action of KEY_BINDABLE_ACTIONS) {
+    result[action] = parseStoredKeyValue(storage.getItem(KEY_BINDING_STORAGE_KEYS[action]), DEFAULT_KEY_BINDINGS[action]);
+  }
+  const codes = KEY_BINDABLE_ACTIONS.map((a) => result[a]);
+  const hasDuplicate = new Set(codes).size !== codes.length;
+  if (hasDuplicate) return { ...DEFAULT_KEY_BINDINGS };
+  return result;
+}
+
+export function saveKeyBinding(storage: StorageLike, action: KeyBindableAction, code: string): void {
+  storage.setItem(KEY_BINDING_STORAGE_KEYS[action], code);
+}
+
+export type KeyBindingChangeListener = (bindings: Readonly<KeyBindings>) => void;
+
+/**
+ * 按鍵映射的執行期容器：建構時載入既有值（含驗證回退）、setBinding 處理衝突互換與持久化、
+ * resetToDefault 一鍵恢復。與 SettingsStore 職責對稱但分開成獨立類別（數值 clamp 與按鍵衝突
+ * 互換是不同性質的驗證邏輯，合併會讓兩者互相牽扯）。
+ */
+export class KeyBindingStore {
+  private current: KeyBindings;
+  private readonly storage: StorageLike;
+  private readonly listeners: KeyBindingChangeListener[] = [];
+
+  constructor(storage: StorageLike) {
+    this.storage = storage;
+    this.current = loadKeyBindings(storage);
+  }
+
+  get(): Readonly<KeyBindings> {
+    return this.current;
+  }
+
+  onChange(listener: KeyBindingChangeListener): void {
+    this.listeners.push(listener);
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) listener(this.current);
+  }
+
+  /**
+   * 重新綁定 action 為 code。code 為保留碼（RESERVED_KEY_CODES）時整次呼叫視為無效，不變更
+   * 任何綁定，回傳 null。若 code 目前綁在另一個可重設動作上，兩者互換（該動作改用 action
+   * 原本的 code，本次派工規格「擷取到的鍵若與其他動作衝突則兩者互換並提示」），回傳被連帶
+   * 互換的動作；否則回傳 null。
+   */
+  setBinding(action: KeyBindableAction, code: string): KeyBindableAction | null {
+    if (RESERVED_KEY_CODES.has(code)) return null;
+    const previousCode = this.current[action];
+    const conflictAction = KEY_BINDABLE_ACTIONS.find((a) => a !== action && this.current[a] === code) ?? null;
+    const next: KeyBindings = { ...this.current, [action]: code };
+    if (conflictAction) next[conflictAction] = previousCode;
+    this.current = next;
+    saveKeyBinding(this.storage, action, code);
+    if (conflictAction) saveKeyBinding(this.storage, conflictAction, previousCode);
+    this.emit();
+    return conflictAction;
+  }
+
+  /** 恢復全部可重設按鍵為預設值並持久化（本次派工規格「附『恢復預設』按鈕」）。 */
+  resetToDefault(): void {
+    this.current = { ...DEFAULT_KEY_BINDINGS };
+    for (const action of KEY_BINDABLE_ACTIONS) saveKeyBinding(this.storage, action, this.current[action]);
+    this.emit();
+  }
+}
+
 export type SettingsChangeListener = (settings: Readonly<Settings>) => void;
 
 /**

@@ -1,6 +1,6 @@
 // 共用的 window.__p96 debug hook 型別宣告（主程式與 Playwright 測試共用，避免兩處宣告衝突）。
 import type { GameState } from "../game/state.ts";
-import type { Settings } from "../core/settings.ts";
+import type { Settings, KeyBindings } from "../core/settings.ts";
 
 export {};
 
@@ -65,6 +65,8 @@ declare global {
         setState: (state: GameState) => void;
         /** 目前套用中的設定（M2 新增，供 reload 後驗收設定是否讀回一致）。 */
         getSettings: () => Readonly<Settings>;
+        /** 目前套用中的按鍵映射（M3 第四階段新增，供 reload 後驗收綁定是否讀回一致）。 */
+        getKeyBindings: () => Readonly<KeyBindings>;
         /** renderer 目前實際套用的 FOV（度），與 getSettings().fov 分開驗證「真的套用到渲染」。 */
         getFov: () => number;
         /** 直接給予武器（跳過走到台座撿取），等效於實際撿取（含自動裝備／觸發區域 C 伏擊），

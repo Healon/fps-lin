@@ -3,6 +3,10 @@
 // (a) menu 狀態下空白鍵與滑鼠不觸發射擊、敵人不動。
 // (b) playing → paused：敵人與模擬完全凍結（1 秒內 transforms 全等）。
 // (c) 設定變更持久化，reload 後 localStorage 與執行期實際套用值皆一致。
+// (d)（M3 第四階段新增）按鍵重設：Esc 取消擷取不變更綁定、衝突時互換、重綁射擊鍵後新鍵實際
+// 開火而舊鍵失效、reload 後綁定持久化。真實輸入路徑（非 debug.fire()），驗證 InputManager
+// 的映射確實套用，不只是資料層 KeyBindingStore 本身（那部分已由 tests/unit/settings.test.ts
+// 涵蓋，本測試補的是「真瀏覽器下鍵真的能用」，呼應 PLAN §8.1 分層原則）。
 import { test, expect } from "@playwright/test";
 // window.__p96 型別宣告見 src/types/p96-global.d.ts（ambient 全域宣告，tsconfig include 自動生效）。
 
@@ -118,5 +122,85 @@ test.describe("M2 遊戲狀態機與設定系統", () => {
 
     const fovAppliedAfterReload = await page.evaluate(() => window.__p96!.debug.getFov());
     expect(fovAppliedAfterReload).toBeCloseTo(105, 5);
+  });
+
+  test("(d) 按鍵重設：Esc 取消不變更、衝突互換、新鍵實際開火舊鍵失效、reload 後持久化", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    await page.goto("/");
+    await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
+
+    // 從主選單進入設定。
+    await page.locator('[data-role="menu-settings-button"]').click();
+    await expect(page.locator("#p96-settings-overlay")).toBeVisible();
+
+    const initialBindings = await page.evaluate(() => window.__p96!.debug.getKeyBindings());
+    expect(initialBindings.fire).toBe("Space");
+    expect(initialBindings.interact).toBe("KeyE");
+    expect(initialBindings.right).toBe("KeyD");
+
+    // Esc 取消擷取：點「重新綁定」後按 Esc，綁定不變，面板顯示還原成原值。
+    await page.locator('[data-role="key-fire-rebind"]').click();
+    await expect(page.locator('[data-role="key-fire-value"]')).toHaveText("請按下新按鍵…（Esc 取消）");
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[data-role="key-fire-value"]')).toHaveText("空白鍵");
+    expect((await page.evaluate(() => window.__p96!.debug.getKeyBindings())).fire).toBe("Space");
+
+    // 衝突互換：把「互動」（預設 KeyE）重綁成 KeyD（目前是「右移」）；兩者應互換。
+    await page.locator('[data-role="key-interact-rebind"]').click();
+    await page.keyboard.press("KeyD");
+    const afterSwap = await page.evaluate(() => window.__p96!.debug.getKeyBindings());
+    expect(afterSwap.interact).toBe("KeyD");
+    expect(afterSwap.right).toBe("KeyE"); // 互動原本的 KeyE 換給了右移
+    expect(await page.locator('[data-role="key-interact-value"]').textContent()).toBe("D");
+    expect(await page.locator('[data-role="key-right-value"]').textContent()).toBe("E");
+
+    // 重綁射擊鍵為 KeyF（無衝突：KeyF 未被任何動作使用）。
+    await page.locator('[data-role="key-fire-rebind"]').click();
+    await page.keyboard.press("KeyF");
+    const afterFireRebind = await page.evaluate(() => window.__p96!.debug.getKeyBindings());
+    expect(afterFireRebind.fire).toBe("KeyF");
+    expect(await page.locator('[data-role="key-fire-value"]').textContent()).toBe("F");
+
+    // 主選單操控提示應同步反映新綁定（本次派工規格「操控提示改為動態生成」）。
+    await page.locator('[data-role="settings-back"]').click();
+    const hintText = await page.locator('[data-role="menu-controls-hint"]').textContent();
+    expect(hintText).toContain("F：射擊");
+    expect(hintText).toContain("D：互動");
+
+    // 進入 playing，裝備脈衝手槍，驗證新鍵（F）實際開火、舊鍵（Space）失效。
+    await page.locator("#p96-start-overlay").click();
+    await page.keyboard.press("Enter"); // 跳過開場文字
+    await page.waitForFunction(() => window.__p96?.gameState === "playing", undefined, { timeout: 5_000 });
+    await page.evaluate(() => window.__p96!.debug.grantWeapon("pistol"));
+
+    const ammoBeforeSpace = await page.evaluate(() => window.__p96!.ammo());
+    await page.keyboard.down("Space");
+    await page.waitForTimeout(400);
+    await page.keyboard.up("Space");
+    const ammoAfterSpace = await page.evaluate(() => window.__p96!.ammo());
+    expect(ammoAfterSpace, "舊射擊鍵（Space）重綁後不應再觸發開火").toBe(ammoBeforeSpace);
+
+    await page.keyboard.down("KeyF");
+    await page.waitForTimeout(400); // 大於脈衝手槍冷卻（PLAN §3.3：3 發/秒，約 333ms）
+    await page.keyboard.up("KeyF");
+    const ammoAfterF = await page.evaluate(() => window.__p96!.ammo());
+    expect(ammoAfterF, "新射擊鍵（KeyF）應實際觸發開火，彈藥減少").toBeLessThan(ammoBeforeSpace);
+
+    // reload 後綁定持久化。
+    await page.reload();
+    await page.waitForFunction(() => window.__p96?.ready === true, undefined, { timeout: 10_000 });
+    const afterReload = await page.evaluate(() => window.__p96!.debug.getKeyBindings());
+    expect(afterReload.fire).toBe("KeyF");
+    expect(afterReload.interact).toBe("KeyD");
+    expect(afterReload.right).toBe("KeyE");
+
+    expect(consoleErrors, `console errors: ${JSON.stringify(consoleErrors)}`).toHaveLength(0);
+    expect(pageErrors, `page errors: ${JSON.stringify(pageErrors)}`).toHaveLength(0);
   });
 });
